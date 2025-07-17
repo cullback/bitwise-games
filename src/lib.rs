@@ -1,6 +1,8 @@
 mod game;
 mod input;
 mod output;
+pub mod draw_command;
+pub mod frame_buffer;
 
 pub use game::Game;
 use minifb::{Key, Window, WindowOptions};
