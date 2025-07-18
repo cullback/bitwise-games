@@ -1,4 +1,4 @@
-use crate::input::Input;
+use minifb::Key;
 
 pub trait Game {
     const NAME: &'static str;
@@ -7,5 +7,5 @@ pub trait Game {
     const HEIGHT: usize;
 
     fn new(args: Vec<String>) -> u64;
-    fn update(&self, state: u64, input: Input<'_>) -> (Vec<u32>, u64);
+    fn update(&self, state: u64, keys: &[Key]) -> (Vec<u32>, u64);
 }
