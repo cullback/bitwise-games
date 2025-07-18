@@ -96,9 +96,10 @@ fn to_u64(state: &Breakout) -> u64 {
 fn draw(state: &Breakout) -> Vec<u32> {
     let mut fb = FrameBuffer::new(Breakout::WIDTH as u32, Breakout::HEIGHT as u32);
     let scale = (Breakout::WIDTH / 64) as u32;
+    let mut draw_commands = Vec::new();
 
-    // Draw background
-    fb.draw(&DrawCommand::Rectangle(Rectangle {
+    // Add background
+    draw_commands.push(DrawCommand::Rectangle(Rectangle {
         x: 0,
         y: 0,
         width: Breakout::WIDTH as u32,
@@ -106,7 +107,7 @@ fn draw(state: &Breakout) -> Vec<u32> {
         color: DARK_BLUE,
     }));
 
-    // Draw bricks
+    // Add bricks
     let brick_width: u8 = 8;
     let brick_height: u8 = 4;
     let brick_colors = [RED, ORANGE, YELLOW, GREEN, BLUE];
@@ -114,40 +115,40 @@ fn draw(state: &Breakout) -> Vec<u32> {
         if (state.bricks >> i) & 1 == 1 {
             let row = i / N_BRICK_COLS;
             let col = i % N_BRICK_COLS;
-            let rect = DrawCommand::Rectangle(Rectangle {
+            draw_commands.push(DrawCommand::Rectangle(Rectangle {
                 x: (col as u32 * brick_width as u32) * scale,
                 y: (row as u32 * brick_height as u32) * scale,
                 width: brick_width as u32 * scale,
                 height: brick_height as u32 * scale,
                 color: brick_colors[usize::from(row)],
-            });
-            fb.draw(&rect);
+            }));
         }
     }
 
-    // Draw paddle
+    // Add paddle
     let paddle_width: u8 = 12;
     let paddle_height: u8 = 2;
     let paddle_y: u8 = 60;
-    let paddle = DrawCommand::Rectangle(Rectangle {
+    draw_commands.push(DrawCommand::Rectangle(Rectangle {
         x: state.paddle_pos as u32 * scale,
         y: paddle_y as u32 * scale,
         width: paddle_width as u32 * scale,
         height: paddle_height as u32 * scale,
         color: WHITE,
-    });
-    fb.draw(&paddle);
+    }));
 
-    // Draw ball
+    // Add ball
     let ball_size: u8 = 2;
-    let ball = DrawCommand::Rectangle(Rectangle {
+    draw_commands.push(DrawCommand::Rectangle(Rectangle {
         x: state.ball_pos_x as u32 * scale,
         y: state.ball_pos_y as u32 * scale,
         width: ball_size as u32 * scale,
         height: ball_size as u32 * scale,
         color: WHITE,
-    });
-    fb.draw(&ball);
+    }));
+
+    // Draw all commands at once
+    fb.draw_list(&draw_commands);
 
     fb.pixels
 }

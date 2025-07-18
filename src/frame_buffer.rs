@@ -23,6 +23,12 @@ impl FrameBuffer {
         }
     }
 
+    pub fn draw_list(&mut self, commands: &[DrawCommand]) {
+        for command in commands {
+            self.draw(command);
+        }
+    }
+
     fn draw_rectangle(&mut self, rect: &Rectangle) {
         for y in rect.y..(rect.y + rect.height) {
             for x in rect.x..(rect.x + rect.width) {
