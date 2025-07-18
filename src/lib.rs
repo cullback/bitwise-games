@@ -20,9 +20,7 @@ pub fn run_game<T: Game>() {
         let frame_start = Instant::now();
 
         let keys = window.get_keys();
-        if !keys.is_empty() {
-            (game_state, framebuffer) = T::update(game_state, &keys);
-        }
+        (game_state, framebuffer) = T::update(game_state, &keys);
 
         window
             .update_with_buffer(&framebuffer, T::WIDTH, T::HEIGHT)
