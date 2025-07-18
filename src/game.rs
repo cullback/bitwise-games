@@ -6,6 +6,6 @@ pub trait Game {
     const WIDTH: usize;
     const HEIGHT: usize;
 
-    fn new(args: Vec<String>) -> u64;
-    fn update(&self, state: u64, keys: &[Key]) -> (Vec<u32>, u64);
+    fn new(args: Vec<String>) -> (u64, Vec<u32>);
+    fn update(state: u64, keys: &[Key]) -> (u64, Vec<u32>);
 }
