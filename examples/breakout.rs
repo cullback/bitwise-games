@@ -16,9 +16,9 @@ use bitwise_games::Game;
 use bitwise_games::frame_buffer::FrameBuffer;
 use minifb::Key;
 
-const BRICK_ROWS: usize = 5;
-const BRICK_COLS: usize = 8;
-const BRICKS: usize = BRICK_ROWS * BRICK_COLS;
+const N_BRICK_ROWS: u8 = 5;
+const N_BRICK_COLS: u8 = 8;
+const N_BRICKS: u8 = N_BRICK_ROWS * N_BRICK_COLS;
 
 struct Breakout {
     bricks: u64,
@@ -28,12 +28,52 @@ struct Breakout {
     ball_vel: u8,
 }
 
+fn get_bits<T>(value: u64, start: u8, length: u8) -> T
+where
+    T: TryFrom<u64>,
+    T::Error: std::fmt::Debug,
+{
+    // Ensure parameters are within valid range
+    assert!(start < 64, "Start position must be less than 64");
+    assert!(length > 0, "Length must be greater than 0");
+    assert!(start + length <= 64, "Start + length must not exceed 64");
+
+    let mask = if length == 64 {
+        u64::MAX
+    } else {
+        (1u64 << length) - 1
+    };
+
+    let extracted = (value >> start) & mask;
+
+    T::try_from(extracted).unwrap()
+}
+
+fn set_bits<T>(value: u64, data: T, start: u8, length: u8) -> u64
+where
+    u64: From<T>,
+{
+    assert!(start < 64, "Start position must be less than 64");
+    assert!(length > 0, "Length must be greater than 0");
+    assert!(start + length <= 64, "Start + length must not exceed 64");
+
+    let data_u64 = u64::from(data);
+    let mask = if length == 64 {
+        u64::MAX
+    } else {
+        (1u64 << length) - 1
+    };
+
+    // Clear the bits in the target range and set the new bits
+    (value & !(mask << start)) | ((data_u64 & mask) << start)
+}
+
 fn from_u64(state: u64) -> Breakout {
-    let bricks = state & ((1 << BRICKS) - 1);
-    let paddle_pos = ((state >> BRICKS) & 0x3F) as u8;
-    let ball_pos_x = ((state >> (BRICKS + 6)) & 0x3F) as u8;
-    let ball_pos_y = ((state >> (BRICKS + 12)) & 0x3F) as u8;
-    let ball_vel = ((state >> (BRICKS + 18)) & 0x3) as u8;
+    let bricks = get_bits(state, 0, N_BRICKS as u8);
+    let paddle_pos = get_bits(state, N_BRICKS as u8, 6);
+    let ball_pos_x = get_bits(state, (N_BRICKS + 6) as u8, 6);
+    let ball_pos_y = get_bits(state, (N_BRICKS + 12) as u8, 6);
+    let ball_vel = get_bits(state, (N_BRICKS + 18) as u8, 2);
     Breakout {
         bricks,
         paddle_pos,
@@ -44,11 +84,13 @@ fn from_u64(state: u64) -> Breakout {
 }
 
 fn to_u64(state: &Breakout) -> u64 {
-    state.bricks
-        | (state.paddle_pos as u64) << BRICKS
-        | (state.ball_pos_x as u64) << (BRICKS + 6)
-        | (state.ball_pos_y as u64) << (BRICKS + 12)
-        | (state.ball_vel as u64) << (BRICKS + 18)
+    let mut result = 0u64;
+    result = set_bits(result, state.bricks, 0, N_BRICKS as u8);
+    result = set_bits(result, state.paddle_pos, N_BRICKS as u8, 6);
+    result = set_bits(result, state.ball_pos_x, (N_BRICKS + 6) as u8, 6);
+    result = set_bits(result, state.ball_pos_y, (N_BRICKS + 12) as u8, 6);
+    result = set_bits(result, state.ball_vel, (N_BRICKS + 18) as u8, 2);
+    result
 }
 
 fn draw(state: &Breakout) -> Vec<u32> {
@@ -68,16 +110,16 @@ fn draw(state: &Breakout) -> Vec<u32> {
     let brick_width: u8 = 8;
     let brick_height: u8 = 4;
     let brick_colors = [RED, ORANGE, YELLOW, GREEN, BLUE];
-    for i in 0..BRICKS {
+    for i in 0..N_BRICKS {
         if (state.bricks >> i) & 1 == 1 {
-            let row = i / BRICK_COLS;
-            let col = i % BRICK_COLS;
+            let row = i / N_BRICK_COLS;
+            let col = i % N_BRICK_COLS;
             let rect = DrawCommand::Rectangle(Rectangle {
                 x: (col as u32 * brick_width as u32) * scale,
                 y: (row as u32 * brick_height as u32) * scale,
                 width: brick_width as u32 * scale,
                 height: brick_height as u32 * scale,
-                color: brick_colors[row],
+                color: brick_colors[usize::from(row)],
             });
             fb.draw(&rect);
         }
@@ -118,7 +160,7 @@ impl Game for Breakout {
 
     fn new(_args: Vec<String>) -> (u64, Vec<u32>) {
         let state = Breakout {
-            bricks: (1 << BRICKS) - 1,
+            bricks: (1 << N_BRICKS) - 1,
             paddle_pos: 26, // (64-12)/2
             ball_pos_x: 31, // (64-2)/2
             ball_pos_y: 57, // just above paddle
@@ -196,12 +238,12 @@ impl Game for Breakout {
         // Bricks
         let brick_width: u8 = 8;
         let brick_height: u8 = 4;
-        if state.ball_pos_y < (BRICK_ROWS * brick_height as usize) as u8 {
+        if state.ball_pos_y < N_BRICK_ROWS * brick_height {
             let brick_col = (state.ball_pos_x + ball_size / 2) / brick_width;
             let brick_row = (state.ball_pos_y + ball_size / 2) / brick_height;
-            let brick_index = (brick_row as usize * BRICK_COLS) + brick_col as usize;
+            let brick_index = (brick_row * N_BRICK_COLS) + brick_col;
 
-            if brick_index < BRICKS && (state.bricks >> brick_index) & 1 == 1 {
+            if brick_index < N_BRICKS && (state.bricks >> brick_index) & 1 == 1 {
                 state.bricks &= !(1 << brick_index);
 
                 // Check for side collision vs top/bottom collision
