@@ -1,11 +1,12 @@
+pub mod draw_command;
+pub mod frame_buffer;
 mod game;
 mod input;
 mod output;
-pub mod draw_command;
-pub mod frame_buffer;
 
 pub use game::Game;
 use minifb::{Key, Window, WindowOptions};
+use std::env;
 use std::time::{Duration, Instant};
 
 pub fn run_game<T: Game>() {
@@ -14,8 +15,8 @@ pub fn run_game<T: Game>() {
     let millis_per_frame = (1000 / T::FPS) as u64;
     window.set_target_fps(T::FPS);
 
-    let game = T::new();
-    let mut state = T::new();
+    let args: Vec<String> = env::args().collect();
+    let mut state = T::new(args);
     let frame_duration = Duration::from_millis(millis_per_frame);
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
