@@ -108,42 +108,42 @@ fn draw(state: &Breakout) -> Vec<u32> {
     }));
 
     // Add bricks
-    let brick_width: u8 = 8;
-    let brick_height: u8 = 4;
+    let brick_width: u32 = 8;
+    let brick_height: u32 = 4;
     let brick_colors = [RED, ORANGE, YELLOW, GREEN, BLUE];
     for i in 0..N_BRICKS {
         if (state.bricks >> i) & 1 == 1 {
-            let row = i / N_BRICK_COLS;
-            let col = i % N_BRICK_COLS;
+            let row = u32::from(i / N_BRICK_COLS);
+            let col = u32::from(i % N_BRICK_COLS);
             draw_commands.push(DrawCommand::Rectangle(Rectangle {
-                x: (col as u32 * brick_width as u32) * scale,
-                y: (row as u32 * brick_height as u32) * scale,
-                width: brick_width as u32 * scale,
-                height: brick_height as u32 * scale,
-                color: brick_colors[usize::from(row)],
+                x: col * brick_width * scale,
+                y: row * brick_height * scale,
+                width: brick_width * scale,
+                height: brick_height * scale,
+                color: brick_colors[row as usize],
             }));
         }
     }
 
     // Add paddle
-    let paddle_width: u8 = 12;
-    let paddle_height: u8 = 2;
-    let paddle_y: u8 = 60;
+    let paddle_width: u32 = 12;
+    let paddle_height: u32 = 2;
+    let paddle_y: u8 = 62;
     draw_commands.push(DrawCommand::Rectangle(Rectangle {
         x: state.paddle_pos as u32 * scale,
         y: paddle_y as u32 * scale,
-        width: paddle_width as u32 * scale,
-        height: paddle_height as u32 * scale,
+        width: paddle_width * scale,
+        height: paddle_height * scale,
         color: WHITE,
     }));
 
     // Add ball
-    let ball_size: u8 = 2;
+    let ball_size: u32 = 2;
     draw_commands.push(DrawCommand::Rectangle(Rectangle {
         x: state.ball_pos_x as u32 * scale,
         y: state.ball_pos_y as u32 * scale,
-        width: ball_size as u32 * scale,
-        height: ball_size as u32 * scale,
+        width: ball_size * scale,
+        height: ball_size * scale,
         color: WHITE,
     }));
 
