@@ -175,6 +175,75 @@ fn scale_framebuffer(fb_64x64: &[u32], scale_factor: u32) -> Vec<u32> {
     scaled_fb
 }
 
+fn handle_collisions(
+    state: &mut Breakout,
+    dx: i8,
+    dy: i8,
+    old_ball_x: u8,
+    old_ball_y: u8,
+    paddle_width: u8,
+) {
+    let ball_size: u8 = 2;
+
+    // Left/Right walls
+    if (state.ball_pos_x == 0 && dx < 0) || (state.ball_pos_x >= 64 - ball_size && dx > 0) {
+        state.ball_vel ^= 1;
+        state.ball_pos_x = old_ball_x;
+    }
+
+    // Top wall
+    if state.ball_pos_y == 0 && dy < 0 {
+        state.ball_vel ^= 2;
+        state.ball_pos_y = old_ball_y;
+    }
+
+    // Bottom wall (lose)
+    if state.ball_pos_y >= 64 - ball_size && dy > 0 {
+        // Reset ball
+        state.ball_pos_x = 31;
+        state.ball_pos_y = 57;
+        state.ball_vel = 1;
+    }
+
+    // Paddle
+    let paddle_y: u8 = 60;
+    if dy > 0 && state.ball_pos_y + ball_size >= paddle_y && old_ball_y + ball_size < paddle_y {
+        if state.ball_pos_x + ball_size > state.paddle_pos
+            && state.ball_pos_x < state.paddle_pos + paddle_width
+        {
+            state.ball_vel ^= 2;
+            state.ball_pos_y = old_ball_y;
+        }
+    }
+
+    // Bricks
+    let brick_width: u8 = 8;
+    let brick_height: u8 = 4;
+    if state.ball_pos_y < N_BRICK_ROWS * brick_height {
+        let brick_col = (state.ball_pos_x + ball_size / 2) / brick_width;
+        let brick_row = (state.ball_pos_y + ball_size / 2) / brick_height;
+        let brick_index = (brick_row * N_BRICK_COLS) + brick_col;
+
+        if brick_index < N_BRICKS && (state.bricks >> brick_index) & 1 == 1 {
+            state.bricks &= !(1 << brick_index);
+
+            // Check for side collision vs top/bottom collision
+            let brick_x = brick_col * brick_width;
+
+            let overlap_x =
+                (old_ball_x + ball_size > brick_x) && (old_ball_x < brick_x + brick_width);
+
+            if overlap_x {
+                state.ball_vel ^= 2; // Vertical collision
+                state.ball_pos_y = old_ball_y;
+            } else {
+                state.ball_vel ^= 1; // Horizontal collision
+                state.ball_pos_x = old_ball_x;
+            }
+        }
+    }
+}
+
 impl Game for Breakout {
     const NAME: &'static str = "Breakout";
     const WIDTH: usize = 640;
@@ -226,66 +295,7 @@ impl Game for Breakout {
         state.ball_pos_x = (state.ball_pos_x as i8 + dx) as u8;
         state.ball_pos_y = (state.ball_pos_y as i8 + dy) as u8;
 
-        // Collision
-        let ball_size: u8 = 2;
-
-        // Left/Right walls
-        if (state.ball_pos_x == 0 && dx < 0) || (state.ball_pos_x >= 64 - ball_size && dx > 0) {
-            state.ball_vel ^= 1;
-            state.ball_pos_x = old_ball_x;
-        }
-
-        // Top wall
-        if state.ball_pos_y == 0 && dy < 0 {
-            state.ball_vel ^= 2;
-            state.ball_pos_y = old_ball_y;
-        }
-
-        // Bottom wall (lose)
-        if state.ball_pos_y >= 64 - ball_size && dy > 0 {
-            // Reset ball
-            state.ball_pos_x = 31;
-            state.ball_pos_y = 57;
-            state.ball_vel = 1;
-        }
-
-        // Paddle
-        let paddle_y: u8 = 60;
-        if dy > 0 && state.ball_pos_y + ball_size >= paddle_y && old_ball_y + ball_size < paddle_y {
-            if state.ball_pos_x + ball_size > state.paddle_pos
-                && state.ball_pos_x < state.paddle_pos + paddle_width
-            {
-                state.ball_vel ^= 2;
-                state.ball_pos_y = old_ball_y;
-            }
-        }
-
-        // Bricks
-        let brick_width: u8 = 8;
-        let brick_height: u8 = 4;
-        if state.ball_pos_y < N_BRICK_ROWS * brick_height {
-            let brick_col = (state.ball_pos_x + ball_size / 2) / brick_width;
-            let brick_row = (state.ball_pos_y + ball_size / 2) / brick_height;
-            let brick_index = (brick_row * N_BRICK_COLS) + brick_col;
-
-            if brick_index < N_BRICKS && (state.bricks >> brick_index) & 1 == 1 {
-                state.bricks &= !(1 << brick_index);
-
-                // Check for side collision vs top/bottom collision
-                let brick_x = brick_col * brick_width;
-
-                let overlap_x =
-                    (old_ball_x + ball_size > brick_x) && (old_ball_x < brick_x + brick_width);
-
-                if overlap_x {
-                    state.ball_vel ^= 2; // Vertical collision
-                    state.ball_pos_y = old_ball_y;
-                } else {
-                    state.ball_vel ^= 1; // Horizontal collision
-                    state.ball_pos_x = old_ball_x;
-                }
-            }
-        }
+        handle_collisions(&mut state, dx, dy, old_ball_x, old_ball_y, paddle_width);
 
         let new_state_u64 = to_u64(&state);
         let fb_64x64 = draw_64x64(&state);
