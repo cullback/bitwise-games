@@ -93,17 +93,16 @@ fn to_u64(state: &Breakout) -> u64 {
     result
 }
 
-fn draw(state: &Breakout) -> Vec<u32> {
-    let mut fb = FrameBuffer::new(Breakout::WIDTH as u32, Breakout::HEIGHT as u32);
-    let scale = (Breakout::WIDTH / 64) as u32;
+fn draw_64x64(state: &Breakout) -> Vec<u32> {
+    let mut fb = FrameBuffer::new(64, 64);
     let mut draw_commands = Vec::new();
 
     // Add background
     draw_commands.push(DrawCommand::Rectangle(Rectangle {
         x: 0,
         y: 0,
-        width: Breakout::WIDTH as u32,
-        height: Breakout::HEIGHT as u32,
+        width: 64,
+        height: 64,
         color: DARK_BLUE,
     }));
 
@@ -116,10 +115,10 @@ fn draw(state: &Breakout) -> Vec<u32> {
             let row = u32::from(i / N_BRICK_COLS);
             let col = u32::from(i % N_BRICK_COLS);
             draw_commands.push(DrawCommand::Rectangle(Rectangle {
-                x: col * brick_width * scale,
-                y: row * brick_height * scale,
-                width: brick_width * scale,
-                height: brick_height * scale,
+                x: col * brick_width,
+                y: row * brick_height,
+                width: brick_width,
+                height: brick_height,
                 color: brick_colors[row as usize],
             }));
         }
@@ -130,20 +129,20 @@ fn draw(state: &Breakout) -> Vec<u32> {
     let paddle_height: u32 = 2;
     let paddle_y: u8 = 62;
     draw_commands.push(DrawCommand::Rectangle(Rectangle {
-        x: state.paddle_pos as u32 * scale,
-        y: paddle_y as u32 * scale,
-        width: paddle_width * scale,
-        height: paddle_height * scale,
+        x: state.paddle_pos as u32,
+        y: paddle_y as u32,
+        width: paddle_width,
+        height: paddle_height,
         color: WHITE,
     }));
 
     // Add ball
     let ball_size: u32 = 2;
     draw_commands.push(DrawCommand::Rectangle(Rectangle {
-        x: state.ball_pos_x as u32 * scale,
-        y: state.ball_pos_y as u32 * scale,
-        width: ball_size * scale,
-        height: ball_size * scale,
+        x: state.ball_pos_x as u32,
+        y: state.ball_pos_y as u32,
+        width: ball_size,
+        height: ball_size,
         color: WHITE,
     }));
 
@@ -151,6 +150,29 @@ fn draw(state: &Breakout) -> Vec<u32> {
     fb.draw_list(&draw_commands);
 
     fb.pixels
+}
+
+fn scale_framebuffer(fb_64x64: &[u32], scale_factor: u32) -> Vec<u32> {
+    let output_size = (64 * scale_factor) as usize;
+    let mut scaled_fb = vec![0u32; output_size * output_size];
+
+    for y in 0..64 {
+        for x in 0..64 {
+            let pixel = fb_64x64[y * 64 + x];
+
+            // Scale each pixel to a scale_factor x scale_factor block
+            for dy in 0..scale_factor {
+                for dx in 0..scale_factor {
+                    let scaled_x = x * scale_factor as usize + dx as usize;
+                    let scaled_y = y * scale_factor as usize + dy as usize;
+                    let scaled_index = scaled_y * output_size + scaled_x;
+                    scaled_fb[scaled_index] = pixel;
+                }
+            }
+        }
+    }
+
+    scaled_fb
 }
 
 impl Game for Breakout {
@@ -168,7 +190,9 @@ impl Game for Breakout {
             ball_vel: 1,    // up-right
         };
         let state_u64 = to_u64(&state);
-        let fb = draw(&state);
+        let fb_64x64 = draw_64x64(&state);
+        let scale_factor = (Breakout::WIDTH / 64) as u32;
+        let fb = scale_framebuffer(&fb_64x64, scale_factor);
         (state_u64, fb)
     }
 
@@ -249,7 +273,6 @@ impl Game for Breakout {
 
                 // Check for side collision vs top/bottom collision
                 let brick_x = brick_col * brick_width;
-                let brick_y = brick_row * brick_height;
 
                 let overlap_x =
                     (old_ball_x + ball_size > brick_x) && (old_ball_x < brick_x + brick_width);
@@ -265,7 +288,9 @@ impl Game for Breakout {
         }
 
         let new_state_u64 = to_u64(&state);
-        let fb = draw(&state);
+        let fb_64x64 = draw_64x64(&state);
+        let scale_factor = (Breakout::WIDTH / 64) as u32;
+        let fb = scale_framebuffer(&fb_64x64, scale_factor);
         (new_state_u64, fb)
     }
 }
