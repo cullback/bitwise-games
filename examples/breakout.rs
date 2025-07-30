@@ -141,7 +141,7 @@ fn check_wall_collision(ball_x: u8, ball_y: u8, dx: i8, dy: i8) -> (bool, bool) 
     let right_wall = ball_x >= BOARD_WIDTH as u8 - BALL_SIZE as u8 && dx > 0;
     let top_wall = ball_y == 0 && dy < 0;
     let bottom_wall = ball_y >= BOARD_HEIGHT as u8 - BALL_SIZE as u8 && dy > 0;
-    
+
     (left_wall || right_wall, top_wall || bottom_wall)
 }
 
@@ -149,24 +149,24 @@ fn check_paddle_collision(ball_x: u8, ball_y: u8, old_ball_y: u8, paddle_pos: u8
     if dy <= 0 {
         return false; // Ball not moving down
     }
-    
+
     let ball_bottom = ball_y + BALL_SIZE as u8;
     let old_ball_bottom = old_ball_y + BALL_SIZE as u8;
     let paddle_top = PADDLE_Y as u8;
-    
+
     // Check if ball crossed paddle top this frame
     let crossed_paddle = ball_bottom >= paddle_top && old_ball_bottom < paddle_top;
-    
+
     if !crossed_paddle {
         return false;
     }
-    
+
     // Check horizontal overlap
     let ball_left = ball_x;
     let ball_right = ball_x + BALL_SIZE as u8;
     let paddle_left = paddle_pos;
     let paddle_right = paddle_pos + PADDLE_WIDTH as u8;
-    
+
     ball_right > paddle_left && ball_left < paddle_right
 }
 
@@ -174,43 +174,49 @@ fn find_brick_collision(ball_x: u8, ball_y: u8, bricks: u64) -> Option<u8> {
     if ball_y >= N_BRICK_ROWS * BRICK_HEIGHT as u8 {
         return None; // Ball below brick area
     }
-    
+
     // Check all four corners of the ball for brick collision
     let corners = [
-        (ball_x, ball_y), // top-left
-        (ball_x + BALL_SIZE as u8 - 1, ball_y), // top-right
-        (ball_x, ball_y + BALL_SIZE as u8 - 1), // bottom-left
+        (ball_x, ball_y),                                             // top-left
+        (ball_x + BALL_SIZE as u8 - 1, ball_y),                       // top-right
+        (ball_x, ball_y + BALL_SIZE as u8 - 1),                       // bottom-left
         (ball_x + BALL_SIZE as u8 - 1, ball_y + BALL_SIZE as u8 - 1), // bottom-right
     ];
-    
+
     for (x, y) in corners {
         if x < BOARD_WIDTH as u8 && y < N_BRICK_ROWS * BRICK_HEIGHT as u8 {
             let brick_col = x / BRICK_WIDTH as u8;
             let brick_row = y / BRICK_HEIGHT as u8;
             let brick_index = brick_row * N_BRICK_COLS + brick_col;
-            
+
             if brick_index < N_BRICKS && (bricks >> brick_index) & 1 == 1 {
                 return Some(brick_index);
             }
         }
     }
-    
+
     None
 }
 
-fn determine_brick_collision_direction(_ball_x: u8, _ball_y: u8, _old_ball_x: u8, old_ball_y: u8, brick_index: u8) -> bool {
+fn determine_brick_collision_direction(
+    _ball_x: u8,
+    _ball_y: u8,
+    _old_ball_x: u8,
+    old_ball_y: u8,
+    brick_index: u8,
+) -> bool {
     let brick_row = brick_index / N_BRICK_COLS;
     let _brick_col = brick_index % N_BRICK_COLS;
     let brick_y = brick_row * BRICK_HEIGHT as u8;
-    
+
     // Check if the ball was horizontally aligned with the brick in the previous frame
     let old_ball_bottom = old_ball_y + BALL_SIZE as u8;
     let old_ball_top = old_ball_y;
     let brick_bottom = brick_y + BRICK_HEIGHT as u8;
     let brick_top = brick_y;
-    
+
     let was_vertically_aligned = old_ball_bottom > brick_top && old_ball_top < brick_bottom;
-    
+
     // If ball was vertically aligned, it's a horizontal collision
     // Otherwise, it's a vertical collision
     !was_vertically_aligned
@@ -295,11 +301,17 @@ fn scale_framebuffer(fb_64x64: &[u32], scale_factor: u32) -> Vec<u32> {
 // Collision response functions
 fn reset_ball_position(state: &mut Breakout) {
     state.ball_pos_x = (BOARD_WIDTH / 2 - BALL_SIZE / 2) as u8;
-    state.ball_pos_y = 57;
+    state.ball_pos_y = (BOARD_HEIGHT - PADDLE_HEIGHT - BALL_SIZE) as u8;
     state.ball_vel = BALL_UP_RIGHT;
 }
 
-fn handle_wall_collision(state: &mut Breakout, old_ball_x: u8, old_ball_y: u8, horizontal_hit: bool, vertical_hit: bool) {
+fn handle_wall_collision(
+    state: &mut Breakout,
+    old_ball_x: u8,
+    old_ball_y: u8,
+    horizontal_hit: bool,
+    vertical_hit: bool,
+) {
     if horizontal_hit {
         state.ball_vel = flip_ball_horizontal(state.ball_vel);
         state.ball_pos_x = old_ball_x;
@@ -315,10 +327,16 @@ fn handle_paddle_collision(state: &mut Breakout, old_ball_y: u8) {
     state.ball_pos_y = old_ball_y;
 }
 
-fn handle_brick_collision(state: &mut Breakout, old_ball_x: u8, old_ball_y: u8, brick_index: u8, is_vertical: bool) {
+fn handle_brick_collision(
+    state: &mut Breakout,
+    old_ball_x: u8,
+    old_ball_y: u8,
+    brick_index: u8,
+    is_vertical: bool,
+) {
     // Remove the brick
     state.bricks &= !(1 << brick_index);
-    
+
     // Bounce the ball
     if is_vertical {
         state.ball_vel = flip_ball_vertical(state.ball_vel);
@@ -331,30 +349,49 @@ fn handle_brick_collision(state: &mut Breakout, old_ball_x: u8, old_ball_y: u8, 
 
 fn handle_collisions(state: &mut Breakout, dx: i8, dy: i8, old_ball_x: u8, old_ball_y: u8) {
     // Check wall collisions
-    let (horizontal_wall, vertical_wall) = check_wall_collision(state.ball_pos_x, state.ball_pos_y, dx, dy);
-    
+    let (horizontal_wall, vertical_wall) =
+        check_wall_collision(state.ball_pos_x, state.ball_pos_y, dx, dy);
+
     // Check for bottom wall (game over)
     if state.ball_pos_y >= BOARD_HEIGHT as u8 - BALL_SIZE as u8 && dy > 0 {
         reset_ball_position(state);
         return;
     }
-    
+
     // Handle wall bounces
     if horizontal_wall || vertical_wall {
-        handle_wall_collision(state, old_ball_x, old_ball_y, horizontal_wall, vertical_wall);
+        handle_wall_collision(
+            state,
+            old_ball_x,
+            old_ball_y,
+            horizontal_wall,
+            vertical_wall,
+        );
         return;
     }
-    
+
     // Check paddle collision
-    if check_paddle_collision(state.ball_pos_x, state.ball_pos_y, old_ball_y, state.paddle_pos, dy) {
-        handle_paddle_collision(state, old_ball_y);
+    if check_paddle_collision(
+        state.ball_pos_x,
+        state.ball_pos_y,
+        old_ball_y,
+        state.paddle_pos,
+        dy,
+    ) {
+        handle_paddle_collision(state, state.ball_pos_y);
         return;
     }
-    
+
     // Check brick collision
-    if let Some(brick_index) = find_brick_collision(state.ball_pos_x, state.ball_pos_y, state.bricks) {
+    if let Some(brick_index) =
+        find_brick_collision(state.ball_pos_x, state.ball_pos_y, state.bricks)
+    {
         let is_vertical = determine_brick_collision_direction(
-            state.ball_pos_x, state.ball_pos_y, old_ball_x, old_ball_y, brick_index
+            state.ball_pos_x,
+            state.ball_pos_y,
+            old_ball_x,
+            old_ball_y,
+            brick_index,
         );
         handle_brick_collision(state, old_ball_x, old_ball_y, brick_index, is_vertical);
         return;
