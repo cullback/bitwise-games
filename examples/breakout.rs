@@ -36,6 +36,12 @@ const PADDLE_WIDTH: u32 = 12;
 const PADDLE_HEIGHT: u32 = 2;
 const PADDLE_Y: u32 = 62;
 
+// Ball velocity directions
+const BALL_UP_LEFT: u8 = 0;
+const BALL_UP_RIGHT: u8 = 1;
+const BALL_DOWN_LEFT: u8 = 2;
+const BALL_DOWN_RIGHT: u8 = 3;
+
 struct Breakout {
     bricks: u64,
     paddle_pos: u8,
@@ -107,6 +113,26 @@ fn to_u64(state: &Breakout) -> u64 {
     result = set_bits(result, state.ball_pos_y, (N_BRICKS + 12) as u8, 6);
     result = set_bits(result, state.ball_vel, (N_BRICKS + 18) as u8, 2);
     result
+}
+
+fn flip_ball_horizontal(velocity: u8) -> u8 {
+    match velocity {
+        BALL_UP_LEFT => BALL_UP_RIGHT,
+        BALL_UP_RIGHT => BALL_UP_LEFT,
+        BALL_DOWN_LEFT => BALL_DOWN_RIGHT,
+        BALL_DOWN_RIGHT => BALL_DOWN_LEFT,
+        _ => velocity,
+    }
+}
+
+fn flip_ball_vertical(velocity: u8) -> u8 {
+    match velocity {
+        BALL_UP_LEFT => BALL_DOWN_LEFT,
+        BALL_UP_RIGHT => BALL_DOWN_RIGHT,
+        BALL_DOWN_LEFT => BALL_UP_LEFT,
+        BALL_DOWN_RIGHT => BALL_UP_RIGHT,
+        _ => velocity,
+    }
 }
 
 fn draw_64x64(state: &Breakout) -> Vec<u32> {
@@ -190,13 +216,13 @@ fn handle_collisions(state: &mut Breakout, dx: i8, dy: i8, old_ball_x: u8, old_b
     if (state.ball_pos_x == 0 && dx < 0)
         || (state.ball_pos_x >= BOARD_WIDTH as u8 - BALL_SIZE as u8 && dx > 0)
     {
-        state.ball_vel ^= 1;
+        state.ball_vel = flip_ball_horizontal(state.ball_vel);
         state.ball_pos_x = old_ball_x;
     }
 
     // Top wall
     if state.ball_pos_y == 0 && dy < 0 {
-        state.ball_vel ^= 2;
+        state.ball_vel = flip_ball_vertical(state.ball_vel);
         state.ball_pos_y = old_ball_y;
     }
 
@@ -205,7 +231,7 @@ fn handle_collisions(state: &mut Breakout, dx: i8, dy: i8, old_ball_x: u8, old_b
         // Reset ball
         state.ball_pos_x = (BOARD_WIDTH / 2 - BALL_SIZE / 2) as u8;
         state.ball_pos_y = 57;
-        state.ball_vel = 1;
+        state.ball_vel = BALL_UP_RIGHT;
     }
 
     // Paddle
@@ -216,7 +242,7 @@ fn handle_collisions(state: &mut Breakout, dx: i8, dy: i8, old_ball_x: u8, old_b
         if state.ball_pos_x + (BALL_SIZE as u8) > state.paddle_pos
             && state.ball_pos_x < state.paddle_pos + (PADDLE_WIDTH as u8)
         {
-            state.ball_vel ^= 2;
+            state.ball_vel = flip_ball_vertical(state.ball_vel);
             state.ball_pos_y = old_ball_y;
         }
     }
@@ -237,10 +263,10 @@ fn handle_collisions(state: &mut Breakout, dx: i8, dy: i8, old_ball_x: u8, old_b
                 && (old_ball_x < brick_x + BRICK_WIDTH as u8);
 
             if overlap_x {
-                state.ball_vel ^= 2; // Vertical collision
+                state.ball_vel = flip_ball_vertical(state.ball_vel); // Vertical collision
                 state.ball_pos_y = old_ball_y;
             } else {
-                state.ball_vel ^= 1; // Horizontal collision
+                state.ball_vel = flip_ball_horizontal(state.ball_vel); // Horizontal collision
                 state.ball_pos_x = old_ball_x;
             }
         }
@@ -259,7 +285,7 @@ impl Game for Breakout {
             paddle_pos: ((BOARD_WIDTH - PADDLE_WIDTH) / 2) as u8,
             ball_pos_x: ((BOARD_WIDTH - BALL_SIZE) / 2) as u8,
             ball_pos_y: 57, // just above paddle
-            ball_vel: 1,    // up-right
+            ball_vel: BALL_UP_RIGHT,
         };
         let state_u64 = to_u64(&state);
         let fb_64x64 = draw_64x64(&state);
@@ -285,10 +311,11 @@ impl Game for Breakout {
 
         // Move ball
         let (dx, dy) = match state.ball_vel {
-            0 => (-1, -1), // up-left
-            1 => (1, -1),  // up-right
-            2 => (-1, 1),  // down-left
-            _ => (1, 1),   // down-right (3)
+            BALL_UP_LEFT => (-1, -1),
+            BALL_UP_RIGHT => (1, -1),
+            BALL_DOWN_LEFT => (-1, 1),
+            BALL_DOWN_RIGHT => (1, 1),
+            _ => unreachable!(),
         };
 
         let old_ball_x = state.ball_pos_x;
