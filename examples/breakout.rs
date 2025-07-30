@@ -20,6 +20,22 @@ const N_BRICK_ROWS: u8 = 5;
 const N_BRICK_COLS: u8 = 8;
 const N_BRICKS: u8 = N_BRICK_ROWS * N_BRICK_COLS;
 
+// Game board dimensions
+const BOARD_WIDTH: u32 = 64;
+const BOARD_HEIGHT: u32 = 64;
+
+// Brick dimensions
+const BRICK_WIDTH: u32 = 8;
+const BRICK_HEIGHT: u32 = 4;
+
+// Ball dimensions
+const BALL_SIZE: u32 = 2;
+
+// Paddle dimensions and position
+const PADDLE_WIDTH: u32 = 12;
+const PADDLE_HEIGHT: u32 = 2;
+const PADDLE_Y: u32 = 62;
+
 struct Breakout {
     bricks: u64,
     paddle_pos: u8,
@@ -101,48 +117,42 @@ fn draw_64x64(state: &Breakout) -> Vec<u32> {
     draw_commands.push(DrawCommand::Rectangle(Rectangle {
         x: 0,
         y: 0,
-        width: 64,
-        height: 64,
+        width: BOARD_WIDTH,
+        height: BOARD_HEIGHT,
         color: DARK_BLUE,
     }));
 
     // Add bricks
-    let brick_width: u32 = 8;
-    let brick_height: u32 = 4;
     let brick_colors = [RED, ORANGE, YELLOW, GREEN, BLUE];
     for i in 0..N_BRICKS {
         if (state.bricks >> i) & 1 == 1 {
             let row = u32::from(i / N_BRICK_COLS);
             let col = u32::from(i % N_BRICK_COLS);
             draw_commands.push(DrawCommand::Rectangle(Rectangle {
-                x: col * brick_width,
-                y: row * brick_height,
-                width: brick_width,
-                height: brick_height,
+                x: col * BRICK_WIDTH,
+                y: row * BRICK_HEIGHT,
+                width: BRICK_WIDTH,
+                height: BRICK_HEIGHT,
                 color: brick_colors[row as usize],
             }));
         }
     }
 
     // Add paddle
-    let paddle_width: u32 = 12;
-    let paddle_height: u32 = 2;
-    let paddle_y: u8 = 62;
     draw_commands.push(DrawCommand::Rectangle(Rectangle {
         x: state.paddle_pos as u32,
-        y: paddle_y as u32,
-        width: paddle_width,
-        height: paddle_height,
+        y: PADDLE_Y,
+        width: PADDLE_WIDTH,
+        height: PADDLE_HEIGHT,
         color: WHITE,
     }));
 
     // Add ball
-    let ball_size: u32 = 2;
     draw_commands.push(DrawCommand::Rectangle(Rectangle {
         x: state.ball_pos_x as u32,
         y: state.ball_pos_y as u32,
-        width: ball_size,
-        height: ball_size,
+        width: BALL_SIZE,
+        height: BALL_SIZE,
         color: WHITE,
     }));
 
@@ -153,12 +163,12 @@ fn draw_64x64(state: &Breakout) -> Vec<u32> {
 }
 
 fn scale_framebuffer(fb_64x64: &[u32], scale_factor: u32) -> Vec<u32> {
-    let output_size = (64 * scale_factor) as usize;
+    let output_size = (BOARD_WIDTH * scale_factor) as usize;
     let mut scaled_fb = vec![0u32; output_size * output_size];
 
-    for y in 0..64 {
-        for x in 0..64 {
-            let pixel = fb_64x64[y * 64 + x];
+    for y in 0..BOARD_HEIGHT as usize {
+        for x in 0..BOARD_WIDTH as usize {
+            let pixel = fb_64x64[y * BOARD_WIDTH as usize + x];
 
             // Scale each pixel to a scale_factor x scale_factor block
             for dy in 0..scale_factor {
@@ -175,18 +185,11 @@ fn scale_framebuffer(fb_64x64: &[u32], scale_factor: u32) -> Vec<u32> {
     scaled_fb
 }
 
-fn handle_collisions(
-    state: &mut Breakout,
-    dx: i8,
-    dy: i8,
-    old_ball_x: u8,
-    old_ball_y: u8,
-    paddle_width: u8,
-) {
-    let ball_size: u8 = 2;
-
+fn handle_collisions(state: &mut Breakout, dx: i8, dy: i8, old_ball_x: u8, old_ball_y: u8) {
     // Left/Right walls
-    if (state.ball_pos_x == 0 && dx < 0) || (state.ball_pos_x >= 64 - ball_size && dx > 0) {
+    if (state.ball_pos_x == 0 && dx < 0)
+        || (state.ball_pos_x >= BOARD_WIDTH as u8 - BALL_SIZE as u8 && dx > 0)
+    {
         state.ball_vel ^= 1;
         state.ball_pos_x = old_ball_x;
     }
@@ -198,18 +201,20 @@ fn handle_collisions(
     }
 
     // Bottom wall (lose)
-    if state.ball_pos_y >= 64 - ball_size && dy > 0 {
+    if state.ball_pos_y >= BOARD_HEIGHT as u8 - BALL_SIZE as u8 && dy > 0 {
         // Reset ball
-        state.ball_pos_x = 31;
+        state.ball_pos_x = (BOARD_WIDTH / 2 - BALL_SIZE / 2) as u8;
         state.ball_pos_y = 57;
         state.ball_vel = 1;
     }
 
     // Paddle
-    let paddle_y: u8 = 60;
-    if dy > 0 && state.ball_pos_y + ball_size >= paddle_y && old_ball_y + ball_size < paddle_y {
-        if state.ball_pos_x + ball_size > state.paddle_pos
-            && state.ball_pos_x < state.paddle_pos + paddle_width
+    if dy > 0
+        && state.ball_pos_y + (BALL_SIZE as u8) >= (PADDLE_Y as u8)
+        && old_ball_y + (BALL_SIZE as u8) < (PADDLE_Y as u8)
+    {
+        if state.ball_pos_x + (BALL_SIZE as u8) > state.paddle_pos
+            && state.ball_pos_x < state.paddle_pos + (PADDLE_WIDTH as u8)
         {
             state.ball_vel ^= 2;
             state.ball_pos_y = old_ball_y;
@@ -217,21 +222,19 @@ fn handle_collisions(
     }
 
     // Bricks
-    let brick_width: u8 = 8;
-    let brick_height: u8 = 4;
-    if state.ball_pos_y < N_BRICK_ROWS * brick_height {
-        let brick_col = (state.ball_pos_x + ball_size / 2) / brick_width;
-        let brick_row = (state.ball_pos_y + ball_size / 2) / brick_height;
+    if state.ball_pos_y < N_BRICK_ROWS * BRICK_HEIGHT as u8 {
+        let brick_col = (state.ball_pos_x + BALL_SIZE as u8 / 2) / BRICK_WIDTH as u8;
+        let brick_row = (state.ball_pos_y + BALL_SIZE as u8 / 2) / BRICK_HEIGHT as u8;
         let brick_index = (brick_row * N_BRICK_COLS) + brick_col;
 
         if brick_index < N_BRICKS && (state.bricks >> brick_index) & 1 == 1 {
             state.bricks &= !(1 << brick_index);
 
             // Check for side collision vs top/bottom collision
-            let brick_x = brick_col * brick_width;
+            let brick_x = brick_col * BRICK_WIDTH as u8;
 
-            let overlap_x =
-                (old_ball_x + ball_size > brick_x) && (old_ball_x < brick_x + brick_width);
+            let overlap_x = (old_ball_x + BALL_SIZE as u8 > brick_x)
+                && (old_ball_x < brick_x + BRICK_WIDTH as u8);
 
             if overlap_x {
                 state.ball_vel ^= 2; // Vertical collision
@@ -253,21 +256,20 @@ impl Game for Breakout {
     fn new(_args: Vec<String>) -> (u64, Vec<u32>) {
         let state = Breakout {
             bricks: (1 << N_BRICKS) - 1,
-            paddle_pos: 26, // (64-12)/2
-            ball_pos_x: 31, // (64-2)/2
+            paddle_pos: ((BOARD_WIDTH - PADDLE_WIDTH) / 2) as u8,
+            ball_pos_x: ((BOARD_WIDTH - BALL_SIZE) / 2) as u8,
             ball_pos_y: 57, // just above paddle
             ball_vel: 1,    // up-right
         };
         let state_u64 = to_u64(&state);
         let fb_64x64 = draw_64x64(&state);
-        let scale_factor = (Breakout::WIDTH / 64) as u32;
+        let scale_factor = (Breakout::WIDTH / BOARD_WIDTH as usize) as u32;
         let fb = scale_framebuffer(&fb_64x64, scale_factor);
         (state_u64, fb)
     }
 
     fn update(state_u64: u64, input: &[Key]) -> (u64, Vec<u32>) {
         let mut state = from_u64(state_u64);
-        let paddle_width: u8 = 12;
 
         // Move paddle
         if input.contains(&Key::Left) {
@@ -276,7 +278,7 @@ impl Game for Breakout {
             }
         }
         if input.contains(&Key::Right) {
-            if state.paddle_pos < 64 - paddle_width {
+            if state.paddle_pos < BOARD_WIDTH as u8 - PADDLE_WIDTH as u8 {
                 state.paddle_pos += 2;
             }
         }
@@ -295,11 +297,11 @@ impl Game for Breakout {
         state.ball_pos_x = (state.ball_pos_x as i8 + dx) as u8;
         state.ball_pos_y = (state.ball_pos_y as i8 + dy) as u8;
 
-        handle_collisions(&mut state, dx, dy, old_ball_x, old_ball_y, paddle_width);
+        handle_collisions(&mut state, dx, dy, old_ball_x, old_ball_y);
 
         let new_state_u64 = to_u64(&state);
         let fb_64x64 = draw_64x64(&state);
-        let scale_factor = (Breakout::WIDTH / 64) as u32;
+        let scale_factor = (Breakout::WIDTH / BOARD_WIDTH as usize) as u32;
         let fb = scale_framebuffer(&fb_64x64, scale_factor);
         (new_state_u64, fb)
     }
