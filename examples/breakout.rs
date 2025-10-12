@@ -36,6 +36,8 @@ const PADDLE_WIDTH: u32 = 12;
 const PADDLE_HEIGHT: u32 = 2;
 const PADDLE_Y: u32 = 62;
 
+const PADDLE_VELOCITY: u8 = 2;
+
 // Ball velocity directions
 const BALL_UP_LEFT: u8 = 0;
 const BALL_UP_RIGHT: u8 = 1;
@@ -398,6 +400,21 @@ fn handle_collisions(state: &mut Breakout, dx: i8, dy: i8, old_ball_x: u8, old_b
     }
 }
 
+fn update_paddle_position(paddle_pos: u8, input: &[Key]) -> u8 {
+    let mut new_paddle_pos = paddle_pos;
+    if input.contains(&Key::Left) {
+        if paddle_pos > 0 {
+            new_paddle_pos -= PADDLE_VELOCITY;
+        }
+    }
+    if input.contains(&Key::Right) {
+        if paddle_pos < BOARD_WIDTH as u8 - PADDLE_WIDTH as u8 {
+            new_paddle_pos += PADDLE_VELOCITY;
+        }
+    }
+    new_paddle_pos
+}
+
 impl Game for Breakout {
     const NAME: &'static str = "Breakout";
     const WIDTH: usize = 640;
@@ -422,17 +439,7 @@ impl Game for Breakout {
     fn update(state_u64: u64, input: &[Key]) -> (u64, Vec<u32>) {
         let mut state = from_u64(state_u64);
 
-        // Move paddle
-        if input.contains(&Key::Left) {
-            if state.paddle_pos > 0 {
-                state.paddle_pos -= 2;
-            }
-        }
-        if input.contains(&Key::Right) {
-            if state.paddle_pos < BOARD_WIDTH as u8 - PADDLE_WIDTH as u8 {
-                state.paddle_pos += 2;
-            }
-        }
+        state.paddle_pos = update_paddle_position(state.paddle_pos, input);
 
         // Move ball
         let (dx, dy) = match state.ball_vel {
