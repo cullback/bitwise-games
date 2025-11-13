@@ -1,13 +1,15 @@
-
 # Game loop
 
 1. convert u64 to state object
 2. process inputs and update state
-  - helps make the game feel more responsive instead of updating at end
+
+- helps make the game feel more responsive instead of updating at end
+
 3. render based on state
 
 First update the paddle position based on input, then check for collisions.
 Why?
+
 1. Causality and input-first logic
 
 Game ticks simulate time moving forward. Inputs are interpreted as actions taken in that frame.
