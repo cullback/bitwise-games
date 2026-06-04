@@ -11,6 +11,15 @@ via the permutation module, no bit-packing required.
 There are 16! ≈ 2.09e13 permutations, so the state occupies ≈ 44 bits
 of the u64; the top 20 bits are zero.
 
+A nice property of the 15 puzzle: only *half* of those 16! permutations
+are actually reachable from the solved state. Every legal slide flips
+both the permutation's parity (it's an odd transposition with the
+empty cell) and the parity of the empty cell's row index, so
+`perm_parity XOR empty_row_parity` is a conserved invariant. We always
+start from solved and apply legal moves, so the scramble only lands
+in solvable states — but a hand-rolled u64 < 16! would be unsolvable
+~50% of the time.
+
 */
 use bitwise_games::Game;
 use bitwise_games::draw_command::{BLUE, DARK_BLUE, DrawCommand, GREEN, WHITE};
