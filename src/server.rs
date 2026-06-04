@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use tungstenite::{Message, WebSocket, accept};
 
 const INDEX_HTML: &str = include_str!("client.html");
-const ADDR: &str = "0.0.0.0:9001";
+const ADDR: &str = "0.0.0.0:3000";
 
 pub fn run_game<T: Game>() {
     let listener = TcpListener::bind(ADDR).unwrap();
