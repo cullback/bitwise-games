@@ -396,10 +396,10 @@ impl Game for Breakout {
         (state_u64, fb)
     }
 
-    fn update(state_u64: u64, input: &[Key]) -> (u64, Vec<u32>) {
+    fn update(state_u64: u64, held: &[Key], _pressed: &[Key]) -> (u64, Vec<u32>) {
         let mut state = from_u64(state_u64);
 
-        state.paddle_pos = update_paddle_position(state.paddle_pos, input);
+        state.paddle_pos = update_paddle_position(state.paddle_pos, held);
 
         // Move ball
         let (dx, dy) = match state.ball_vel {

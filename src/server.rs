@@ -51,6 +51,7 @@ fn run_loop<T: Game>(ws: &mut WebSocket<TcpStream>) {
     let (mut state, mut fb) = T::new(args);
     let frame_dur = Duration::from_millis(1000 / T::FPS as u64);
     let mut held: Vec<Key> = Vec::new();
+    let mut prev_held: Vec<Key> = Vec::new();
 
     loop {
         let start = Instant::now();
@@ -86,8 +87,14 @@ fn run_loop<T: Game>(ws: &mut WebSocket<TcpStream>) {
         }
         ws.get_mut().set_nonblocking(false).ok();
 
-        let keys = seen.unwrap_or_else(|| held.clone());
-        (state, fb) = T::update(state, &keys);
+        let effective_held = seen.unwrap_or_else(|| held.clone());
+        let pressed: Vec<Key> = effective_held
+            .iter()
+            .filter(|k| !prev_held.contains(k))
+            .copied()
+            .collect();
+        (state, fb) = T::update(state, &effective_held, &pressed);
+        prev_held = held.clone();
 
         let mut bytes = Vec::with_capacity(fb.len() * 4);
         for px in &fb {
