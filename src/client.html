@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>__NAME__</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; }
+  body { display: flex; justify-content: center; align-items: center; }
+  canvas { image-rendering: pixelated; border: 1px solid #444; }
+  #status { position: fixed; top: 8px; left: 8px; color: #888; font: 12px monospace; }
+</style>
+</head>
+<body>
+<canvas id="screen" width="__WIDTH__" height="__HEIGHT__"></canvas>
+<div id="status">connecting…</div>
+<script>
+  const W = __WIDTH__, H = __HEIGHT__;
+  const canvas = document.getElementById('screen');
+  const ctx = canvas.getContext('2d');
+  const imageData = ctx.createImageData(W, H);
+  const statusEl = document.getElementById('status');
+
+  const ws = new WebSocket(`ws://${location.host}/`);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { statusEl.textContent = ''; };
+  ws.onclose = () => { statusEl.textContent = 'disconnected'; };
+  ws.onmessage = (ev) => {
+    if (ev.data instanceof ArrayBuffer) {
+      imageData.data.set(new Uint8Array(ev.data));
+      ctx.putImageData(imageData, 0, 0);
+    }
+  };
+
+  const KEY_MAP = {
+    ArrowLeft: 'Left', ArrowRight: 'Right', ArrowUp: 'Up', ArrowDown: 'Down',
+    Space: 'Space', Enter: 'Enter', Escape: 'Escape',
+    ShiftLeft: 'LeftShift', ShiftRight: 'RightShift',
+  };
+  for (let i = 0; i < 26; i++) {
+    const c = String.fromCharCode(65 + i);
+    KEY_MAP[`Key${c}`] = c;
+  }
+
+  const held = new Set();
+  const sendKeys = () => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(Array.from(held).join(','));
+    }
+  };
+
+  window.addEventListener('keydown', (e) => {
+    const k = KEY_MAP[e.code];
+    if (!k || e.repeat) return;
+    e.preventDefault();
+    if (!held.has(k)) { held.add(k); sendKeys(); }
+  });
+  window.addEventListener('keyup', (e) => {
+    const k = KEY_MAP[e.code];
+    if (!k) return;
+    e.preventDefault();
+    if (held.delete(k)) sendKeys();
+  });
+</script>
+</body>
+</html>

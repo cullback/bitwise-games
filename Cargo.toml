@@ -3,5 +3,11 @@ name = "bitwise-games"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["server"]
+desktop = []
+server = ["dep:tungstenite"]
+
 [dependencies]
 minifb = "0.28.0"
+tungstenite = { version = "0.24", optional = true }
