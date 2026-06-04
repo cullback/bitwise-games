@@ -23,18 +23,23 @@ use std::collections::BTreeMap;
 /// ```
 pub fn from_permutation<T: Ord + Copy>(pieces: &[T]) -> u64 {
     let mut counts = histogram(pieces);
+    let mut total: u64 = pieces.len() as u64;
+    let mut multi: u128 = multiset_count_u128(&counts);
     let mut rank: u64 = 0;
     for p in pieces {
-        let lesser: Vec<T> = counts.range(..*p).map(|(k, _)| *k).collect();
-        for s in lesser {
-            if counts[&s] == 0 {
+        // Arrangements starting with any symbol s < p:
+        //   contribute multi * counts[s] / total each
+        for (_, &c) in counts.range(..*p) {
+            if c == 0 {
                 continue;
             }
-            *counts.get_mut(&s).unwrap() -= 1;
-            rank += multiset_count(&counts);
-            *counts.get_mut(&s).unwrap() += 1;
+            rank += (multi * c as u128 / total as u128) as u64;
         }
+        // Place p; update multi for the remaining n-1 positions
+        let cp = counts[p] as u128;
+        multi = multi * cp / total as u128;
         *counts.get_mut(p).unwrap() -= 1;
+        total -= 1;
     }
     rank
 }
@@ -52,21 +57,26 @@ pub fn from_permutation<T: Ord + Copy>(pieces: &[T]) -> u64 {
 pub fn to_permutation<T: Ord + Copy>(mut rank: u64, symbols: &[T]) -> Vec<T> {
     let mut counts = histogram(symbols);
     let n = symbols.len();
+    let mut total: u64 = n as u64;
+    let mut multi: u128 = multiset_count_u128(&counts);
     let mut result = Vec::with_capacity(n);
     for _ in 0..n {
         let alphabet: Vec<T> = counts.keys().copied().collect();
         for s in alphabet {
-            if counts[&s] == 0 {
+            let c = counts[&s] as u128;
+            if c == 0 {
                 continue;
             }
-            *counts.get_mut(&s).unwrap() -= 1;
-            let c = multiset_count(&counts);
-            if rank < c {
+            // Arrangements starting with s in this position
+            let count = multi * c / total as u128;
+            if (rank as u128) < count {
                 result.push(s);
+                multi = count;
+                *counts.get_mut(&s).unwrap() -= 1;
+                total -= 1;
                 break;
             }
-            rank -= c;
-            *counts.get_mut(&s).unwrap() += 1;
+            rank -= count as u64;
         }
     }
     result
@@ -77,6 +87,10 @@ pub fn to_permutation<T: Ord + Copy>(mut rank: u64, symbols: &[T]) -> Vec<T> {
 /// Computed as `C(c1, c1) * C(c1+c2, c2) * C(c1+c2+c3, c3) * ...` using `u128`
 /// intermediates. Saturates at `u64::MAX` if the true count overflows.
 pub fn multiset_count<T: Ord>(counts: &BTreeMap<T, u32>) -> u64 {
+    u64::try_from(multiset_count_u128(counts)).unwrap_or(u64::MAX)
+}
+
+fn multiset_count_u128<T: Ord>(counts: &BTreeMap<T, u32>) -> u128 {
     let mut total: u64 = 0;
     let mut result: u128 = 1;
     for &c in counts.values() {
@@ -91,7 +105,7 @@ pub fn multiset_count<T: Ord>(counts: &BTreeMap<T, u32>) -> u64 {
             result = result * (total - i) as u128 / (i + 1) as u128;
         }
     }
-    u64::try_from(result).unwrap_or(u64::MAX)
+    result
 }
 
 fn histogram<T: Ord + Copy>(items: &[T]) -> BTreeMap<T, u32> {
