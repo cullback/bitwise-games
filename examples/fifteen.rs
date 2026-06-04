@@ -2,26 +2,23 @@
 
 15 puzzle state packed into a u64.
 
-The obvious encoding — one nibble per slot, holding the tile number
-(0 = empty, 1..15 = tile) — uses 16 × 4 = 64 bits flat. We invert it
-instead: for each tile 1..15, store the *slot index* (0..15) it
-currently occupies. That's 15 × 4 = 60 bits, and the empty's slot is
-whichever index doesn't appear among the 15 stored positions — no
-bits needed to mark it.
+The board is a permutation of the 16 values {0, 1, ..., 15} across 16
+slots, where 0 is the empty slot and 1..15 are the numbered tiles.
+Every reachable (and unreachable) board is one such permutation, so
+the state is simply that permutation's lexicographic rank — computed
+via the permutation module, no bit-packing required.
 
-Bit layout:
-  bits  0.. 3   slot of tile 1
-  bits  4.. 7   slot of tile 2
-   ...
-  bits 56..59   slot of tile 15
-  bits 60..63   unused
+There are 16! ≈ 2.09e13 permutations, so the state occupies ≈ 44 bits
+of the u64; the top 20 bits are zero.
 
 */
 use bitwise_games::Game;
-use bitwise_games::bits::{get_bits, set_bits};
 use bitwise_games::draw_command::{BLUE, DARK_BLUE, DrawCommand, GREEN, WHITE};
 use bitwise_games::frame_buffer::FrameBuffer;
+use bitwise_games::permutation::{from_permutation, to_permutation};
 use minifb::Key;
+
+const SYMBOLS: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 const BOARD_PX: u32 = 480;
 const TILE: u32 = BOARD_PX / 4;
@@ -54,23 +51,11 @@ fn solved_tiles() -> [u8; 16] {
 }
 
 fn from_u64(state: u64) -> [u8; 16] {
-    let mut tiles = [0u8; 16];
-    for tile in 1..=15u8 {
-        let pos: u8 = get_bits(state, (tile - 1) * 4, 4);
-        tiles[pos as usize] = tile;
-    }
-    tiles
+    to_permutation(state, &SYMBOLS).try_into().unwrap()
 }
 
 fn to_u64(tiles: &[u8; 16]) -> u64 {
-    let mut result = 0u64;
-    for slot in 0..16u8 {
-        let tile = tiles[slot as usize];
-        if tile > 0 {
-            result = set_bits(result, slot, (tile - 1) * 4, 4);
-        }
-    }
-    result
+    from_permutation(tiles)
 }
 
 fn find_empty(tiles: &[u8; 16]) -> usize {
