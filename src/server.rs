@@ -50,15 +50,32 @@ fn run_loop<T: Game>(ws: &mut WebSocket<TcpStream>) {
     let args: Vec<String> = env::args().collect();
     let (mut state, mut fb) = T::new(args);
     let frame_dur = Duration::from_millis(1000 / T::FPS as u64);
-    let mut keys: Vec<Key> = Vec::new();
+    let mut held: Vec<Key> = Vec::new();
 
     loop {
         let start = Instant::now();
 
+        // Union of all key-states observed this frame, so a tap that lands
+        // press+release in one drain still shows up to the game.
+        let mut seen: Option<Vec<Key>> = None;
+
         ws.get_mut().set_nonblocking(true).ok();
         loop {
             match ws.read() {
-                Ok(Message::Text(s)) => keys = parse_keys(&s),
+                Ok(Message::Text(s)) => {
+                    let new_keys = parse_keys(&s);
+                    match &mut seen {
+                        Some(acc) => {
+                            for k in &new_keys {
+                                if !acc.contains(k) {
+                                    acc.push(*k);
+                                }
+                            }
+                        }
+                        None => seen = Some(new_keys.clone()),
+                    }
+                    held = new_keys;
+                }
                 Ok(Message::Close(_)) => return,
                 Ok(_) => {}
                 Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -69,6 +86,7 @@ fn run_loop<T: Game>(ws: &mut WebSocket<TcpStream>) {
         }
         ws.get_mut().set_nonblocking(false).ok();
 
+        let keys = seen.unwrap_or_else(|| held.clone());
         (state, fb) = T::update(state, &keys);
 
         let mut bytes = Vec::with_capacity(fb.len() * 4);
