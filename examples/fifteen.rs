@@ -8,6 +8,7 @@
 
 */
 use bitwise_games::Game;
+use bitwise_games::bits::{get_bits, set_bits};
 use bitwise_games::draw_command::{BLUE, DARK_BLUE, DrawCommand, GREEN, Rectangle, WHITE};
 use bitwise_games::frame_buffer::FrameBuffer;
 use minifb::Key;
@@ -56,22 +57,22 @@ fn solved_tiles() -> [u8; 16] {
 fn from_u64(state: u64) -> Puzzle {
     let mut tiles = [0u8; 16];
     for tile in 1..=15u8 {
-        let pos = ((state >> ((tile - 1) * 4)) & 0xf) as usize;
-        tiles[pos] = tile;
+        let pos: u8 = get_bits(state, (tile - 1) * 4, 4);
+        tiles[pos as usize] = tile;
     }
-    let prev_keys = ((state >> 60) & 0xf) as u8;
+    let prev_keys: u8 = get_bits(state, 60, 4);
     Puzzle { tiles, prev_keys }
 }
 
 fn to_u64(p: &Puzzle) -> u64 {
     let mut result = 0u64;
-    for slot in 0..16 {
-        let tile = p.tiles[slot];
+    for slot in 0..16u8 {
+        let tile = p.tiles[slot as usize];
         if tile > 0 {
-            result |= (slot as u64) << ((tile - 1) * 4);
+            result = set_bits(result, slot, (tile - 1) * 4, 4);
         }
     }
-    result |= (p.prev_keys as u64) << 60;
+    result = set_bits(result, p.prev_keys, 60, 4);
     result
 }
 

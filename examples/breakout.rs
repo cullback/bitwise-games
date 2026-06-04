@@ -8,11 +8,11 @@
 -  4 bits: free
 
 */
+use bitwise_games::Game;
+use bitwise_games::bits::{get_bits, set_bits};
 use bitwise_games::draw_command::{
     BLUE, DARK_BLUE, DrawCommand, GREEN, ORANGE, RED, Rectangle, WHITE, YELLOW,
 };
-
-use bitwise_games::Game;
 use bitwise_games::frame_buffer::FrameBuffer;
 use minifb::Key;
 
@@ -50,46 +50,6 @@ struct Breakout {
     ball_pos_x: u8,
     ball_pos_y: u8,
     ball_vel: u8,
-}
-
-fn get_bits<T>(value: u64, start: u8, length: u8) -> T
-where
-    T: TryFrom<u64>,
-    T::Error: std::fmt::Debug,
-{
-    // Ensure parameters are within valid range
-    assert!(start < 64, "Start position must be less than 64");
-    assert!(length > 0, "Length must be greater than 0");
-    assert!(start + length <= 64, "Start + length must not exceed 64");
-
-    let mask = if length == 64 {
-        u64::MAX
-    } else {
-        (1u64 << length) - 1
-    };
-
-    let extracted = (value >> start) & mask;
-
-    T::try_from(extracted).unwrap()
-}
-
-fn set_bits<T>(value: u64, data: T, start: u8, length: u8) -> u64
-where
-    u64: From<T>,
-{
-    assert!(start < 64, "Start position must be less than 64");
-    assert!(length > 0, "Length must be greater than 0");
-    assert!(start + length <= 64, "Start + length must not exceed 64");
-
-    let data_u64 = u64::from(data);
-    let mask = if length == 64 {
-        u64::MAX
-    } else {
-        (1u64 << length) - 1
-    };
-
-    // Clear the bits in the target range and set the new bits
-    (value & !(mask << start)) | ((data_u64 & mask) << start)
 }
 
 fn from_u64(state: u64) -> Breakout {

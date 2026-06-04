@@ -1,3 +1,4 @@
+pub mod bits;
 pub mod draw_command;
 pub mod frame_buffer;
 mod game;
