@@ -12,7 +12,6 @@ use bitwise_games::bits::{get_bits, set_bits};
 use bitwise_games::draw_command::{BLUE, DARK_BLUE, DrawCommand, GREEN, WHITE};
 use bitwise_games::frame_buffer::FrameBuffer;
 use minifb::Key;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const BOARD_PX: u32 = 480;
 const TILE: u32 = BOARD_PX / 4;
@@ -237,15 +236,7 @@ impl Game for Fifteen {
     const FPS: usize = 30;
 
     fn new(args: Vec<String>) -> (u64, Vec<u32>) {
-        let seed = args
-            .get(1)
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or_else(|| {
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_micros() as u64)
-                    .unwrap_or(1)
-            });
+        let seed = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
         let puzzle = Puzzle {
             tiles: scramble(seed),
             prev_keys: 0,
