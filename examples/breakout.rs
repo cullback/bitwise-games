@@ -11,7 +11,7 @@
 use bitwise_games::Game;
 use bitwise_games::bits::{get_bits, set_bits};
 use bitwise_games::draw_command::{
-    BLUE, DARK_BLUE, DrawCommand, GREEN, ORANGE, RED, Rectangle, WHITE, YELLOW,
+    BLUE, DARK_BLUE, DrawCommand, GREEN, ORANGE, RED, WHITE, YELLOW,
 };
 use bitwise_games::frame_buffer::FrameBuffer;
 use minifb::Key;
@@ -189,13 +189,13 @@ fn draw_64x64(state: &Breakout) -> Vec<u32> {
     let mut draw_commands = Vec::new();
 
     // Add background
-    draw_commands.push(DrawCommand::Rectangle(Rectangle {
-        x: 0,
-        y: 0,
-        width: BOARD_WIDTH,
-        height: BOARD_HEIGHT,
-        color: DARK_BLUE,
-    }));
+    draw_commands.push(DrawCommand::rect(
+        0,
+        0,
+        BOARD_WIDTH,
+        BOARD_HEIGHT,
+        DARK_BLUE,
+    ));
 
     // Add bricks
     let brick_colors = [RED, ORANGE, YELLOW, GREEN, BLUE];
@@ -203,33 +203,33 @@ fn draw_64x64(state: &Breakout) -> Vec<u32> {
         if (state.bricks >> i) & 1 == 1 {
             let row = u32::from(i / N_BRICK_COLS);
             let col = u32::from(i % N_BRICK_COLS);
-            draw_commands.push(DrawCommand::Rectangle(Rectangle {
-                x: col * BRICK_WIDTH,
-                y: row * BRICK_HEIGHT,
-                width: BRICK_WIDTH,
-                height: BRICK_HEIGHT,
-                color: brick_colors[row as usize],
-            }));
+            draw_commands.push(DrawCommand::rect(
+                col * BRICK_WIDTH,
+                row * BRICK_HEIGHT,
+                BRICK_WIDTH,
+                BRICK_HEIGHT,
+                brick_colors[row as usize],
+            ));
         }
     }
 
     // Add paddle
-    draw_commands.push(DrawCommand::Rectangle(Rectangle {
-        x: state.paddle_pos as u32,
-        y: PADDLE_Y,
-        width: PADDLE_WIDTH,
-        height: PADDLE_HEIGHT,
-        color: WHITE,
-    }));
+    draw_commands.push(DrawCommand::rect(
+        state.paddle_pos as u32,
+        PADDLE_Y,
+        PADDLE_WIDTH,
+        PADDLE_HEIGHT,
+        WHITE,
+    ));
 
     // Add ball
-    draw_commands.push(DrawCommand::Rectangle(Rectangle {
-        x: state.ball_pos_x as u32,
-        y: state.ball_pos_y as u32,
-        width: BALL_SIZE,
-        height: BALL_SIZE,
-        color: WHITE,
-    }));
+    draw_commands.push(DrawCommand::rect(
+        state.ball_pos_x as u32,
+        state.ball_pos_y as u32,
+        BALL_SIZE,
+        BALL_SIZE,
+        WHITE,
+    ));
 
     // Draw all commands at once
     fb.draw_list(&draw_commands);

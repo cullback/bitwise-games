@@ -9,7 +9,7 @@
 */
 use bitwise_games::Game;
 use bitwise_games::bits::{get_bits, set_bits};
-use bitwise_games::draw_command::{BLUE, DARK_BLUE, DrawCommand, GREEN, Rectangle, WHITE};
+use bitwise_games::draw_command::{BLUE, DARK_BLUE, DrawCommand, GREEN, WHITE};
 use bitwise_games::frame_buffer::FrameBuffer;
 use minifb::Key;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -169,13 +169,13 @@ fn draw_digit(commands: &mut Vec<DrawCommand>, digit: u8, x: u32, y: u32) {
     for (row, bits) in pattern.iter().enumerate() {
         for col in 0..3u32 {
             if (bits >> (2 - col)) & 1 == 1 {
-                commands.push(DrawCommand::Rectangle(Rectangle {
-                    x: x + col * FONT_SCALE,
-                    y: y + row as u32 * FONT_SCALE,
-                    width: FONT_SCALE,
-                    height: FONT_SCALE,
-                    color: WHITE,
-                }));
+                commands.push(DrawCommand::rect(
+                    x + col * FONT_SCALE,
+                    y + row as u32 * FONT_SCALE,
+                    FONT_SCALE,
+                    FONT_SCALE,
+                    WHITE,
+                ));
             }
         }
     }
@@ -189,13 +189,13 @@ fn draw_tile(commands: &mut Vec<DrawCommand>, slot: usize, value: u8, solved: bo
     let tile_w = TILE - GAP;
     let tile_h = TILE - GAP;
 
-    commands.push(DrawCommand::Rectangle(Rectangle {
-        x: tile_x,
-        y: tile_y,
-        width: tile_w,
-        height: tile_h,
-        color: if solved { GREEN } else { BLUE },
-    }));
+    commands.push(DrawCommand::rect(
+        tile_x,
+        tile_y,
+        tile_w,
+        tile_h,
+        if solved { GREEN } else { BLUE },
+    ));
 
     if value < 10 {
         let dx = tile_x + (tile_w - DIGIT_W) / 2;
@@ -214,13 +214,7 @@ fn render(puzzle: &Puzzle) -> Vec<u32> {
     let mut fb = FrameBuffer::new(BOARD_PX, BOARD_PX);
     let mut commands = Vec::new();
 
-    commands.push(DrawCommand::Rectangle(Rectangle {
-        x: 0,
-        y: 0,
-        width: BOARD_PX,
-        height: BOARD_PX,
-        color: DARK_BLUE,
-    }));
+    commands.push(DrawCommand::rect(0, 0, BOARD_PX, BOARD_PX, DARK_BLUE));
 
     let solved = is_solved(&puzzle.tiles);
     for slot in 0..16 {

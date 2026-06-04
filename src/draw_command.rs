@@ -64,3 +64,34 @@ pub enum DrawCommand {
     Line(Line),
     Circle(Circle),
 }
+
+impl DrawCommand {
+    pub fn rect(x: u32, y: u32, width: u32, height: u32, color: Color) -> Self {
+        Self::Rectangle(Rectangle {
+            x,
+            y,
+            width,
+            height,
+            color,
+        })
+    }
+
+    pub fn line(x1: u32, y1: u32, x2: u32, y2: u32, color: Color) -> Self {
+        Self::Line(Line {
+            x1,
+            y1,
+            x2,
+            y2,
+            color,
+        })
+    }
+
+    pub fn circle(x: u32, y: u32, radius: u32, color: Color) -> Self {
+        Self::Circle(Circle {
+            x,
+            y,
+            radius,
+            color,
+        })
+    }
+}
