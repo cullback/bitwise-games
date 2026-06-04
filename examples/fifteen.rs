@@ -1,10 +1,21 @@
 /*
 
-- 4x4 board, 15 numbered tiles + 1 empty slot
-- 15 tiles × 4 bits = 60 bits for tile positions (slot index 0..15)
-- Empty slot is implied: the one slot not occupied by any tile
-- 4 bits: previous-frame arrow keys, for rising-edge detection so
-  held arrows don't slide multiple tiles per frame
+15 puzzle state packed into a u64.
+
+The obvious encoding — one nibble per slot, holding the tile number
+(0 = empty, 1..15 = tile) — would use 16 × 4 = 64 bits flat, leaving
+nothing for input state. So we invert it: for each tile 1..15, store
+the *slot index* (0..15) it currently occupies. That's 15 × 4 = 60
+bits, and the empty's slot is whichever index doesn't appear among
+the 15 stored positions — no bits needed to mark it.
+
+Bit layout:
+  bits  0.. 3   slot of tile 1
+  bits  4.. 7   slot of tile 2
+   ...
+  bits 56..59   slot of tile 15
+  bits 60..63   prev_keys (Up=1, Down=2, Left=4, Right=8), used for
+                rising-edge detection so a held arrow only slides once.
 
 */
 use bitwise_games::Game;
