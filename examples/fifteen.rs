@@ -212,10 +212,10 @@ impl Game for Fifteen {
         (to_u64(&tiles), render(&tiles))
     }
 
-    fn update(state: u64, _held: &[Key], pressed: &[Key]) -> (u64, Vec<u32>) {
+    fn update(state: u64, _held: &[Key], buffered: &[Key]) -> (u64, Vec<u32>) {
         let mut tiles = from_u64(state);
         for dir in [Key::Up, Key::Down, Key::Left, Key::Right] {
-            if pressed.contains(&dir) {
+            if buffered.contains(&dir) {
                 try_slide(&mut tiles, dir);
                 break;
             }

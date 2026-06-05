@@ -182,7 +182,7 @@ fn glyph(ch: u8) -> [u8; 5] {
         b'K' => [0b101, 0b110, 0b100, 0b110, 0b101],
         b'L' => [0b100, 0b100, 0b100, 0b100, 0b111],
         b'M' => [0b101, 0b111, 0b111, 0b101, 0b101],
-        b'N' => [0b110, 0b101, 0b101, 0b101, 0b011],
+        b'N' => [0b110, 0b101, 0b101, 0b101, 0b101],
         b'O' => [0b111, 0b101, 0b101, 0b101, 0b111],
         b'P' => [0b110, 0b101, 0b110, 0b100, 0b100],
         b'Q' => [0b111, 0b101, 0b101, 0b110, 0b011],
@@ -633,12 +633,12 @@ impl Game for SnakeGame {
         (state, render(state))
     }
 
-    fn update(state: u64, _held: &[Key], pressed: &[Key]) -> (u64, Vec<u32>) {
+    fn update(state: u64, _held: &[Key], buffered: &[Key]) -> (u64, Vec<u32>) {
         let (head, head_dir, apple_bits, body_int) = decode(state);
 
         // Dead state: Z or X restarts; anything else holds the frozen view.
         if body_int == DEAD {
-            if pressed.contains(&Key::Z) || pressed.contains(&Key::X) {
+            if buffered.contains(&Key::Z) || buffered.contains(&Key::X) {
                 let new_state = fresh_state(rng::next(state));
                 return (new_state, render(new_state));
             }
@@ -653,14 +653,14 @@ impl Game for SnakeGame {
 
         // Won state (snake reached max length): freeze, restart on Z/X.
         if turns.len() == MAX_TURNS {
-            if pressed.contains(&Key::Z) || pressed.contains(&Key::X) {
+            if buffered.contains(&Key::Z) || buffered.contains(&Key::X) {
                 let new_state = fresh_state(rng::next(state));
                 return (new_state, render(new_state));
             }
             return (state, render(state));
         }
 
-        // Direction from pressed arrows; can't reverse 180°.
+        // Direction from buffered arrows; can't reverse 180°.
         let mut new_dir = head_dir;
         for &(key, candidate) in &[
             (Key::Up, DIR_UP),
@@ -668,7 +668,7 @@ impl Game for SnakeGame {
             (Key::Down, DIR_DOWN),
             (Key::Left, DIR_LEFT),
         ] {
-            if pressed.contains(&key) && candidate != opposite(head_dir) {
+            if buffered.contains(&key) && candidate != opposite(head_dir) {
                 new_dir = candidate;
                 break;
             }

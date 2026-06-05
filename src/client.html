@@ -44,15 +44,11 @@
     }
   };
 
+  // Only six keys are wired through: arrows + Z + X.
   const KEY_MAP = {
-    ArrowLeft: 'Left', ArrowRight: 'Right', ArrowUp: 'Up', ArrowDown: 'Down',
-    Space: 'Space', Enter: 'Enter', Escape: 'Escape',
-    ShiftLeft: 'LeftShift', ShiftRight: 'RightShift',
+    ArrowUp: 'Up', ArrowRight: 'Right', ArrowDown: 'Down', ArrowLeft: 'Left',
+    KeyZ: 'Z', KeyX: 'X',
   };
-  for (let i = 0; i < 26; i++) {
-    const c = String.fromCharCode(65 + i);
-    KEY_MAP[`Key${c}`] = c;
-  }
 
   const held = new Set();
   const sendKeys = () => {

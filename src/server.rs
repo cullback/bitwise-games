@@ -11,7 +11,7 @@ const ADDR: &str = "0.0.0.0:3000";
 
 pub fn run_game<T: Game>() {
     let listener = TcpListener::bind(ADDR).unwrap();
-    println!("Listening on {ADDR} — open http://<vm-ip>:9001");
+    println!("Listening on {ADDR} — open http://<vm-ip>:3000");
 
     let mut ws = loop {
         let (stream, _) = listener.accept().unwrap();
@@ -46,12 +46,16 @@ fn handle_connection<T: Game>(mut stream: TcpStream) -> Option<WebSocket<TcpStre
     }
 }
 
+const BUFFER_CAP: usize = 4;
+
 fn run_loop<T: Game>(ws: &mut WebSocket<TcpStream>) {
     let args: Vec<String> = env::args().collect();
     let (mut state, mut fb) = T::new(args);
     let frame_dur = Duration::from_millis(1000 / T::FPS as u64);
     let mut held: Vec<Key> = Vec::new();
     let mut prev_held: Vec<Key> = Vec::new();
+    let mut buffer: std::collections::VecDeque<Key> =
+        std::collections::VecDeque::with_capacity(BUFFER_CAP);
 
     loop {
         let start = Instant::now();
@@ -88,12 +92,14 @@ fn run_loop<T: Game>(ws: &mut WebSocket<TcpStream>) {
         ws.get_mut().set_nonblocking(false).ok();
 
         let effective_held = seen.unwrap_or_else(|| held.clone());
-        let pressed: Vec<Key> = effective_held
-            .iter()
-            .filter(|k| !prev_held.contains(k))
-            .copied()
-            .collect();
-        (state, fb) = T::update(state, &effective_held, &pressed);
+        // Queue rising-edge presses (keys held this frame that weren't last).
+        for k in &effective_held {
+            if !prev_held.contains(k) && buffer.len() < BUFFER_CAP {
+                buffer.push_back(*k);
+            }
+        }
+        let buffered: Vec<Key> = buffer.pop_front().into_iter().collect();
+        (state, fb) = T::update(state, &effective_held, &buffered);
         prev_held = held.clone();
 
         let mut bytes = Vec::with_capacity(fb.len() * 4);
@@ -122,42 +128,14 @@ fn parse_keys(s: &str) -> Vec<Key> {
 }
 
 fn name_to_key(name: &str) -> Option<Key> {
+    // Only six keys are wired through: arrows + Z + X.
     match name {
-        "Left" => Some(Key::Left),
-        "Right" => Some(Key::Right),
         "Up" => Some(Key::Up),
+        "Right" => Some(Key::Right),
         "Down" => Some(Key::Down),
-        "Space" => Some(Key::Space),
-        "Enter" => Some(Key::Enter),
-        "Escape" => Some(Key::Escape),
-        "LeftShift" => Some(Key::LeftShift),
-        "RightShift" => Some(Key::RightShift),
-        "A" => Some(Key::A),
-        "B" => Some(Key::B),
-        "C" => Some(Key::C),
-        "D" => Some(Key::D),
-        "E" => Some(Key::E),
-        "F" => Some(Key::F),
-        "G" => Some(Key::G),
-        "H" => Some(Key::H),
-        "I" => Some(Key::I),
-        "J" => Some(Key::J),
-        "K" => Some(Key::K),
-        "L" => Some(Key::L),
-        "M" => Some(Key::M),
-        "N" => Some(Key::N),
-        "O" => Some(Key::O),
-        "P" => Some(Key::P),
-        "Q" => Some(Key::Q),
-        "R" => Some(Key::R),
-        "S" => Some(Key::S),
-        "T" => Some(Key::T),
-        "U" => Some(Key::U),
-        "V" => Some(Key::V),
-        "W" => Some(Key::W),
-        "X" => Some(Key::X),
-        "Y" => Some(Key::Y),
+        "Left" => Some(Key::Left),
         "Z" => Some(Key::Z),
+        "X" => Some(Key::X),
         _ => None,
     }
 }
