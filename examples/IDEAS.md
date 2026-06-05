@@ -35,6 +35,7 @@
 ## Hangman
 
 - 26 bitmap for guessed letters
+- some bits for index of hidden word
 
 ## Lights out
 
@@ -42,10 +43,12 @@
 - 64 cells
 - How to initialize random state?
 
-## Game of life
+## Conway's game of life
 
 - 8x8 board
 - 64 cells
+- hold z and click cells to pause sim and construct?
+- x to clear?
 
 ## [x] Snake
 
@@ -124,3 +127,31 @@
 - we could get a larger board than 8x8 if we set up components correctly
 
 ### Tetris
+
+### Wordle
+
+- 6 chances to guess a 5 letter word
+- guess must be a valid word, we can store as entry
+- need full keyboard entry?
+- suppose an 8 bit word list
+- 6 * 8 indexes = 48 bits
+- maybe the working stored word is done with index + counter
+
+initially
+
+`xxxxx`
+
+type a letter, find first index that matches
+3 bits
+
+- 6 * 10 indices = 60
+- 1024 word list, :/
+
+index 0 is blank. tells us which word we're working on
+we start typing a letter, it picks first index that matches and increments counter. type more and more letters. if it typing a letter would create an invalid word, we flash a message that its invalid and don't increment counter
+
+if counter = 0, take first 0 guess index
+user types letter, matches onto a valid word, inserts the index into the first non zero guess slot, counter increments to 1
+
+type, type, type, until counter = 5, user presses enter
+if correct, counter goes back to zero, keeps the index in the slot with the guessed word.

@@ -99,6 +99,41 @@
     e.preventDefault();
     if (held.delete(k)) sendKeys();
   });
+
+  // Mouse position in framebuffer pixels (0..W, 0..H). Sent as "M:x,y" and
+  // "M:" on leave. Throttled to at most one message per animation frame so
+  // a fast drag doesn't flood the socket.
+  let pendingMouse = null;
+  let mouseScheduled = false;
+  const flushMouse = () => {
+    mouseScheduled = false;
+    if (ws.readyState !== WebSocket.OPEN) return;
+    if (pendingMouse === null) {
+      ws.send('M:');
+    } else {
+      ws.send(`M:${pendingMouse.x},${pendingMouse.y}`);
+    }
+  };
+  const scheduleMouse = () => {
+    if (mouseScheduled) return;
+    mouseScheduled = true;
+    requestAnimationFrame(flushMouse);
+  };
+  canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) * W / rect.width);
+    const y = Math.floor((e.clientY - rect.top) * H / rect.height);
+    if (x < 0 || x >= W || y < 0 || y >= H) {
+      pendingMouse = null;
+    } else {
+      pendingMouse = { x, y };
+    }
+    scheduleMouse();
+  });
+  canvas.addEventListener('mouseleave', () => {
+    pendingMouse = null;
+    scheduleMouse();
+  });
 </script>
 </body>
 </html>

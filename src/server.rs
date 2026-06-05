@@ -52,6 +52,7 @@ fn run_loop<T: Game>(ws: &mut WebSocket<TcpStream>) {
     let mut prev_held: Vec<Key> = Vec::new();
     let mut buffer: std::collections::VecDeque<Key> =
         std::collections::VecDeque::with_capacity(BUFFER_CAP);
+    let mut mouse: Option<(u8, u8)> = None;
 
     // Show the initial frame from `new` before the first tick of input.
     if ws.send(Message::Binary(fb.as_bytes().to_vec())).is_err() {
@@ -69,18 +70,22 @@ fn run_loop<T: Game>(ws: &mut WebSocket<TcpStream>) {
         loop {
             match ws.read() {
                 Ok(Message::Text(s)) => {
-                    let new_keys = parse_keys(&s);
-                    match &mut seen {
-                        Some(acc) => {
-                            for k in &new_keys {
-                                if !acc.contains(k) {
-                                    acc.push(*k);
+                    if let Some(rest) = s.strip_prefix("M:") {
+                        mouse = parse_mouse(rest);
+                    } else {
+                        let new_keys = parse_keys(&s);
+                        match &mut seen {
+                            Some(acc) => {
+                                for k in &new_keys {
+                                    if !acc.contains(k) {
+                                        acc.push(*k);
+                                    }
                                 }
                             }
+                            None => seen = Some(new_keys.clone()),
                         }
-                        None => seen = Some(new_keys.clone()),
+                        held = new_keys;
                     }
-                    held = new_keys;
                 }
                 Ok(Message::Close(_)) => return,
                 Ok(_) => {}
@@ -100,7 +105,7 @@ fn run_loop<T: Game>(ws: &mut WebSocket<TcpStream>) {
             }
         }
         let buffered = buffer.pop_front();
-        (state, fb) = T::update(state, &effective_held, buffered);
+        (state, fb) = T::update(state, &effective_held, buffered, mouse);
         prev_held = held.clone();
 
         if ws.send(Message::Binary(fb.as_bytes().to_vec())).is_err() {
@@ -119,6 +124,12 @@ fn parse_keys(s: &str) -> Vec<Key> {
         .filter(|t| !t.is_empty())
         .filter_map(name_to_key)
         .collect()
+}
+
+/// "x,y" → Some((x, y)); empty string → None (cursor left the canvas).
+fn parse_mouse(s: &str) -> Option<(u8, u8)> {
+    let (xs, ys) = s.split_once(',')?;
+    Some((xs.parse().ok()?, ys.parse().ok()?))
 }
 
 fn name_to_key(name: &str) -> Option<Key> {

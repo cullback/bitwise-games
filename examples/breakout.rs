@@ -364,7 +364,12 @@ impl Game for Breakout {
         (encode(&state), render(&state))
     }
 
-    fn update(state: u64, held: &[Key], _buffered: Option<Key>) -> (u64, FrameBuffer) {
+    fn update(
+        state: u64,
+        held: &[Key],
+        _buffered: Option<Key>,
+        _mouse: Option<(u8, u8)>,
+    ) -> (u64, FrameBuffer) {
         let mut state = decode(state);
 
         state.paddle_pos = update_paddle_position(state.paddle_pos, held);

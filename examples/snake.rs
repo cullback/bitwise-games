@@ -627,7 +627,12 @@ impl Game for SnakeGame {
         (encode(&state), render(&state))
     }
 
-    fn update(state: u64, _held: &[Key], buffered: Option<Key>) -> (u64, FrameBuffer) {
+    fn update(
+        state: u64,
+        _held: &[Key],
+        buffered: Option<Key>,
+        _mouse: Option<(u8, u8)>,
+    ) -> (u64, FrameBuffer) {
         let mut state = decode(state);
 
         // Dead state: Z or X restarts; anything else holds the frozen view.

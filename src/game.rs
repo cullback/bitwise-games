@@ -30,5 +30,13 @@ pub trait Game {
     ///   rising edges and dequeues one per tick, so fast multi-key inputs
     ///   don't get lost. Read for discrete actions (puzzle tile slides,
     ///   snake turns) — successive taps queue up and play out one per tick.
-    fn update(state: u64, held: &[Key], buffered: Option<Key>) -> (u64, FrameBuffer);
+    /// - `mouse`: latest cursor position in framebuffer pixels (0..128),
+    ///   or `None` if the cursor is off-canvas. Use for hover / pointing
+    ///   games; key-only games can ignore it.
+    fn update(
+        state: u64,
+        held: &[Key],
+        buffered: Option<Key>,
+        mouse: Option<(u8, u8)>,
+    ) -> (u64, FrameBuffer);
 }

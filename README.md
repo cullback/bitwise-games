@@ -2,6 +2,12 @@
 
 A library for games that only use 64 bits of internal state.
 
+Inspired by pico-8
+
+- 64 bits of state
+- 6 buttons + mouse
+- 128x128 display, 16 color
+
 A game is defined by two pure functions.
 
 ```rust
