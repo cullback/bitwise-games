@@ -11,10 +11,32 @@
 </style>
 </head>
 <body>
-<canvas id="screen" width="__WIDTH__" height="__HEIGHT__"></canvas>
+<canvas id="screen" width="128" height="128"></canvas>
 <div id="status">connecting…</div>
 <script>
-  const W = __WIDTH__, H = __HEIGHT__;
+  const W = 128, H = 128;
+
+  // PICO-8 palette. Indices must match the Color enum's discriminants on the
+  // Rust side (src/draw_command.rs).
+  const PALETTE = new Uint8Array([
+    0,   0,   0,   // 0  black
+    29,  43,  83,  // 1  dark blue
+    126, 37,  83,  // 2  dark purple
+    0,   135, 81,  // 3  dark green
+    171, 82,  54,  // 4  brown
+    95,  87,  79,  // 5  dark grey
+    194, 195, 199, // 6  light grey
+    255, 241, 232, // 7  white
+    255, 0,   77,  // 8  red
+    255, 163, 0,   // 9  orange
+    255, 236, 39,  // 10 yellow
+    0,   228, 54,  // 11 green
+    41,  173, 255, // 12 blue
+    131, 118, 156, // 13 lavender
+    255, 119, 168, // 14 pink
+    255, 204, 170, // 15 light peach
+  ]);
+
   const canvas = document.getElementById('screen');
   const ctx = canvas.getContext('2d');
   const imageData = ctx.createImageData(W, H);
@@ -38,10 +60,18 @@
   ws.onopen = () => { statusEl.textContent = ''; };
   ws.onclose = () => { statusEl.textContent = 'disconnected'; };
   ws.onmessage = (ev) => {
-    if (ev.data instanceof ArrayBuffer) {
-      imageData.data.set(new Uint8Array(ev.data));
-      ctx.putImageData(imageData, 0, 0);
+    if (!(ev.data instanceof ArrayBuffer)) return;
+    const indices = new Uint8Array(ev.data);
+    const data = imageData.data;
+    for (let i = 0; i < W * H; i++) {
+      const p = indices[i] * 3;
+      const j = i * 4;
+      data[j]     = PALETTE[p];
+      data[j + 1] = PALETTE[p + 1];
+      data[j + 2] = PALETTE[p + 2];
+      data[j + 3] = 255;
     }
+    ctx.putImageData(imageData, 0, 0);
   };
 
   // Only six keys are wired through: arrows + Z + X.

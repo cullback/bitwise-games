@@ -1,20 +1,12 @@
 pub mod bits;
 pub mod draw_command;
+pub mod font;
 pub mod frame_buffer;
 mod game;
 pub mod permutation;
 pub mod rng;
+mod server;
 pub mod varlen;
 
-#[cfg(feature = "desktop")]
-mod desktop;
-#[cfg(feature = "server")]
-mod server;
-
-pub use game::Game;
-
-#[cfg(feature = "desktop")]
-pub use desktop::run_game;
-
-#[cfg(all(feature = "server", not(feature = "desktop")))]
+pub use game::{Game, Key};
 pub use server::run_game;

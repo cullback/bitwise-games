@@ -1,17 +1,21 @@
 use crate::draw_command::{Circle, Color, DrawCommand, Line, Rectangle};
 
+pub const WIDTH: u32 = 128;
+pub const HEIGHT: u32 = 128;
+pub const AREA: usize = (WIDTH * HEIGHT) as usize;
+
 pub struct FrameBuffer {
-    pub pixels: Vec<u32>,
-    pub width: u32,
-    pub height: u32,
+    pub pixels: [Color; AREA],
 }
 
 impl FrameBuffer {
-    pub fn new(width: u32, height: u32) -> Self {
+    pub const WIDTH: u32 = WIDTH;
+    pub const HEIGHT: u32 = HEIGHT;
+    pub const AREA: usize = AREA;
+
+    pub fn new() -> Self {
         Self {
-            pixels: vec![0; (width * height) as usize],
-            width,
-            height,
+            pixels: [Color::Black; AREA],
         }
     }
 
@@ -29,10 +33,18 @@ impl FrameBuffer {
         }
     }
 
+    /// Reinterpret the framebuffer as a flat byte slice of palette indices,
+    /// suitable for sending directly over the wire.
+    pub fn as_bytes(&self) -> &[u8] {
+        // SAFETY: `Color` is `#[repr(u8)]`, so `[Color; AREA]` has the same
+        // size and alignment as `[u8; AREA]`.
+        unsafe { std::slice::from_raw_parts(self.pixels.as_ptr() as *const u8, AREA) }
+    }
+
     fn draw_rectangle(&mut self, rect: &Rectangle) {
         for y in rect.y..(rect.y + rect.height) {
             for x in rect.x..(rect.x + rect.width) {
-                self.set_pixel(x, y, &rect.color);
+                self.set_pixel(x, y, rect.color);
             }
         }
     }
@@ -50,7 +62,7 @@ impl FrameBuffer {
         let mut err = dx + dy;
 
         loop {
-            self.set_pixel(x0 as u32, y0 as u32, &line.color);
+            self.set_pixel(x0 as u32, y0 as u32, line.color);
             if x0 == x1 && y0 == y1 {
                 break;
             }
@@ -75,14 +87,14 @@ impl FrameBuffer {
         let mut err = 0;
 
         while x >= y {
-            self.set_pixel((x_center + x) as u32, (y_center + y) as u32, &circle.color);
-            self.set_pixel((x_center + y) as u32, (y_center + x) as u32, &circle.color);
-            self.set_pixel((x_center - y) as u32, (y_center + x) as u32, &circle.color);
-            self.set_pixel((x_center - x) as u32, (y_center + y) as u32, &circle.color);
-            self.set_pixel((x_center - x) as u32, (y_center - y) as u32, &circle.color);
-            self.set_pixel((x_center - y) as u32, (y_center - x) as u32, &circle.color);
-            self.set_pixel((x_center + y) as u32, (y_center - x) as u32, &circle.color);
-            self.set_pixel((x_center + x) as u32, (y_center - y) as u32, &circle.color);
+            self.set_pixel((x_center + x) as u32, (y_center + y) as u32, circle.color);
+            self.set_pixel((x_center + y) as u32, (y_center + x) as u32, circle.color);
+            self.set_pixel((x_center - y) as u32, (y_center + x) as u32, circle.color);
+            self.set_pixel((x_center - x) as u32, (y_center + y) as u32, circle.color);
+            self.set_pixel((x_center - x) as u32, (y_center - y) as u32, circle.color);
+            self.set_pixel((x_center - y) as u32, (y_center - x) as u32, circle.color);
+            self.set_pixel((x_center + y) as u32, (y_center - x) as u32, circle.color);
+            self.set_pixel((x_center + x) as u32, (y_center - y) as u32, circle.color);
 
             if err <= 0 {
                 y += 1;
@@ -95,15 +107,15 @@ impl FrameBuffer {
         }
     }
 
-    fn set_pixel(&mut self, x: u32, y: u32, color: &Color) {
-        if x < self.width && y < self.height {
-            let index = (y * self.width + x) as usize;
-            if index < self.pixels.len() {
-                self.pixels[index] = ((color.a as u32) << 24)
-                    | ((color.r as u32) << 16)
-                    | ((color.g as u32) << 8)
-                    | (color.b as u32);
-            }
+    fn set_pixel(&mut self, x: u32, y: u32, color: Color) {
+        if x < WIDTH && y < HEIGHT {
+            self.pixels[(y * WIDTH + x) as usize] = color;
         }
+    }
+}
+
+impl Default for FrameBuffer {
+    fn default() -> Self {
+        Self::new()
     }
 }

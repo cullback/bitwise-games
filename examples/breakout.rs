@@ -8,21 +8,22 @@
 -  4 bits: free
 
 */
-use bitwise_games::Game;
 use bitwise_games::bits::{get_bits, set_bits};
 use bitwise_games::draw_command::{
     BLUE, DARK_BLUE, DrawCommand, GREEN, ORANGE, RED, WHITE, YELLOW,
 };
 use bitwise_games::frame_buffer::FrameBuffer;
-use minifb::Key;
+use bitwise_games::{Game, Key};
 
 const N_BRICK_ROWS: u8 = 5;
 const N_BRICK_COLS: u8 = 8;
 const N_BRICKS: u8 = N_BRICK_ROWS * N_BRICK_COLS;
 
-// Game board dimensions
+// Game board is 64×64 in logical pixels — that's the unit ball positions live
+// in (they fit in 6 bits). The framebuffer is 128×128, so render at 2× scale.
 const BOARD_WIDTH: u32 = 64;
 const BOARD_HEIGHT: u32 = 64;
+const SCALE: u32 = 2;
 
 // Brick dimensions
 const BRICK_WIDTH: u32 = 8;
@@ -184,80 +185,51 @@ fn determine_brick_collision_direction(
     !was_vertically_aligned
 }
 
-fn draw_64x64(state: &Breakout) -> Vec<u32> {
-    let mut fb = FrameBuffer::new(64, 64);
-    let mut draw_commands = Vec::new();
+fn render(state: &Breakout) -> FrameBuffer {
+    let mut fb = FrameBuffer::new();
+    let mut cmds = Vec::new();
 
-    // Add background
-    draw_commands.push(DrawCommand::rect(
+    cmds.push(DrawCommand::rect(
         0,
         0,
-        BOARD_WIDTH,
-        BOARD_HEIGHT,
+        BOARD_WIDTH * SCALE,
+        BOARD_HEIGHT * SCALE,
         DARK_BLUE,
     ));
 
-    // Add bricks
     let brick_colors = [RED, ORANGE, YELLOW, GREEN, BLUE];
     for i in 0..N_BRICKS {
         if (state.bricks >> i) & 1 == 1 {
             let row = u32::from(i / N_BRICK_COLS);
             let col = u32::from(i % N_BRICK_COLS);
-            draw_commands.push(DrawCommand::rect(
-                col * BRICK_WIDTH,
-                row * BRICK_HEIGHT,
-                BRICK_WIDTH,
-                BRICK_HEIGHT,
+            cmds.push(DrawCommand::rect(
+                col * BRICK_WIDTH * SCALE,
+                row * BRICK_HEIGHT * SCALE,
+                BRICK_WIDTH * SCALE,
+                BRICK_HEIGHT * SCALE,
                 brick_colors[row as usize],
             ));
         }
     }
 
-    // Add paddle
-    draw_commands.push(DrawCommand::rect(
-        state.paddle_pos as u32,
-        PADDLE_Y,
-        PADDLE_WIDTH,
-        PADDLE_HEIGHT,
+    cmds.push(DrawCommand::rect(
+        state.paddle_pos as u32 * SCALE,
+        PADDLE_Y * SCALE,
+        PADDLE_WIDTH * SCALE,
+        PADDLE_HEIGHT * SCALE,
         WHITE,
     ));
 
-    // Add ball
-    draw_commands.push(DrawCommand::rect(
-        state.ball_pos_x as u32,
-        state.ball_pos_y as u32,
-        BALL_SIZE,
-        BALL_SIZE,
+    cmds.push(DrawCommand::rect(
+        state.ball_pos_x as u32 * SCALE,
+        state.ball_pos_y as u32 * SCALE,
+        BALL_SIZE * SCALE,
+        BALL_SIZE * SCALE,
         WHITE,
     ));
 
-    // Draw all commands at once
-    fb.draw_list(&draw_commands);
-
-    fb.pixels
-}
-
-fn scale_framebuffer(fb_64x64: &[u32], scale_factor: u32) -> Vec<u32> {
-    let output_size = (BOARD_WIDTH * scale_factor) as usize;
-    let mut scaled_fb = vec![0u32; output_size * output_size];
-
-    for y in 0..BOARD_HEIGHT as usize {
-        for x in 0..BOARD_WIDTH as usize {
-            let pixel = fb_64x64[y * BOARD_WIDTH as usize + x];
-
-            // Scale each pixel to a scale_factor x scale_factor block
-            for dy in 0..scale_factor {
-                for dx in 0..scale_factor {
-                    let scaled_x = x * scale_factor as usize + dx as usize;
-                    let scaled_y = y * scale_factor as usize + dy as usize;
-                    let scaled_index = scaled_y * output_size + scaled_x;
-                    scaled_fb[scaled_index] = pixel;
-                }
-            }
-        }
-    }
-
-    scaled_fb
+    fb.draw_list(&cmds);
+    fb
 }
 
 // Collision response functions
@@ -377,11 +349,9 @@ fn update_paddle_position(paddle_pos: u8, input: &[Key]) -> u8 {
 
 impl Game for Breakout {
     const NAME: &'static str = "Breakout";
-    const WIDTH: usize = 640;
-    const HEIGHT: usize = 640;
     const FPS: usize = 30;
 
-    fn new(_args: Vec<String>) -> (u64, Vec<u32>) {
+    fn new(_args: Vec<String>) -> (u64, FrameBuffer) {
         let state = Breakout {
             bricks: (1 << N_BRICKS) - 1,
             paddle_pos: ((BOARD_WIDTH - PADDLE_WIDTH) / 2) as u8,
@@ -389,14 +359,10 @@ impl Game for Breakout {
             ball_pos_y: 57, // just above paddle
             ball_vel: BALL_UP_RIGHT,
         };
-        let state_u64 = to_u64(&state);
-        let fb_64x64 = draw_64x64(&state);
-        let scale_factor = (Breakout::WIDTH / BOARD_WIDTH as usize) as u32;
-        let fb = scale_framebuffer(&fb_64x64, scale_factor);
-        (state_u64, fb)
+        (to_u64(&state), render(&state))
     }
 
-    fn update(state_u64: u64, held: &[Key], _buffered: &[Key]) -> (u64, Vec<u32>) {
+    fn update(state_u64: u64, held: &[Key], _buffered: Option<Key>) -> (u64, FrameBuffer) {
         let mut state = from_u64(state_u64);
 
         state.paddle_pos = update_paddle_position(state.paddle_pos, held);
@@ -418,11 +384,7 @@ impl Game for Breakout {
 
         handle_collisions(&mut state, dx, dy, old_ball_x, old_ball_y);
 
-        let new_state_u64 = to_u64(&state);
-        let fb_64x64 = draw_64x64(&state);
-        let scale_factor = (Breakout::WIDTH / BOARD_WIDTH as usize) as u32;
-        let fb = scale_framebuffer(&fb_64x64, scale_factor);
-        (new_state_u64, fb)
+        (to_u64(&state), render(&state))
     }
 }
 

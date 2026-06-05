@@ -1,36 +1,47 @@
-#[derive(Clone, Copy, Debug)]
-pub struct Color {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-    pub a: u8,
-}
-
-impl Color {
-    const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
-        Color { r, g, b, a: 255 }
-    }
-}
-
 // PICO-8 Color Palette
 // Source: https://pico-8.fandom.com/wiki/Palette
+//
+// The discriminants are the wire format: a FrameBuffer is sent to the client
+// as raw palette indices, and the client maps each index back to RGB via the
+// same table baked into client.html.
 
-pub const BLACK: Color = Color::from_rgb(0, 0, 0);
-pub const DARK_BLUE: Color = Color::from_rgb(29, 43, 83);
-pub const DARK_PURPLE: Color = Color::from_rgb(126, 37, 83);
-pub const DARK_GREEN: Color = Color::from_rgb(0, 135, 81);
-pub const BROWN: Color = Color::from_rgb(171, 82, 54);
-pub const DARK_GREY: Color = Color::from_rgb(95, 87, 79);
-pub const LIGHT_GREY: Color = Color::from_rgb(194, 195, 199);
-pub const WHITE: Color = Color::from_rgb(255, 241, 232);
-pub const RED: Color = Color::from_rgb(255, 0, 77);
-pub const ORANGE: Color = Color::from_rgb(255, 163, 0);
-pub const YELLOW: Color = Color::from_rgb(255, 236, 39);
-pub const GREEN: Color = Color::from_rgb(0, 228, 54);
-pub const BLUE: Color = Color::from_rgb(41, 173, 255);
-pub const LAVENDER: Color = Color::from_rgb(131, 118, 156);
-pub const PINK: Color = Color::from_rgb(255, 119, 168);
-pub const LIGHT_PEACH: Color = Color::from_rgb(255, 204, 170);
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Color {
+    Black = 0,
+    DarkBlue = 1,
+    DarkPurple = 2,
+    DarkGreen = 3,
+    Brown = 4,
+    DarkGrey = 5,
+    LightGrey = 6,
+    White = 7,
+    Red = 8,
+    Orange = 9,
+    Yellow = 10,
+    Green = 11,
+    Blue = 12,
+    Lavender = 13,
+    Pink = 14,
+    LightPeach = 15,
+}
+
+pub const BLACK: Color = Color::Black;
+pub const DARK_BLUE: Color = Color::DarkBlue;
+pub const DARK_PURPLE: Color = Color::DarkPurple;
+pub const DARK_GREEN: Color = Color::DarkGreen;
+pub const BROWN: Color = Color::Brown;
+pub const DARK_GREY: Color = Color::DarkGrey;
+pub const LIGHT_GREY: Color = Color::LightGrey;
+pub const WHITE: Color = Color::White;
+pub const RED: Color = Color::Red;
+pub const ORANGE: Color = Color::Orange;
+pub const YELLOW: Color = Color::Yellow;
+pub const GREEN: Color = Color::Green;
+pub const BLUE: Color = Color::Blue;
+pub const LAVENDER: Color = Color::Lavender;
+pub const PINK: Color = Color::Pink;
+pub const LIGHT_PEACH: Color = Color::LightPeach;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Rectangle {

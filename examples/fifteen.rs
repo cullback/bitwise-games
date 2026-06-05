@@ -21,18 +21,17 @@ in solvable states — but a hand-rolled u64 < 16! would be unsolvable
 ~50% of the time.
 
 */
-use bitwise_games::Game;
 use bitwise_games::draw_command::{BLUE, DARK_BLUE, DrawCommand, GREEN, WHITE};
-use bitwise_games::frame_buffer::FrameBuffer;
+use bitwise_games::frame_buffer::{self, FrameBuffer};
 use bitwise_games::permutation::{from_permutation, to_permutation};
-use minifb::Key;
+use bitwise_games::{Game, Key};
 
 const SYMBOLS: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
-const BOARD_PX: u32 = 480;
+const BOARD_PX: u32 = frame_buffer::WIDTH;
 const TILE: u32 = BOARD_PX / 4;
-const GAP: u32 = 4;
-const FONT_SCALE: u32 = 12;
+const GAP: u32 = 2;
+const FONT_SCALE: u32 = 2;
 const DIGIT_W: u32 = 3 * FONT_SCALE;
 const DIGIT_H: u32 = 5 * FONT_SCALE;
 const DIGIT_GAP: u32 = FONT_SCALE;
@@ -180,8 +179,8 @@ fn draw_tile(commands: &mut Vec<DrawCommand>, slot: usize, value: u8, solved: bo
     }
 }
 
-fn render(tiles: &[u8; 16]) -> Vec<u32> {
-    let mut fb = FrameBuffer::new(BOARD_PX, BOARD_PX);
+fn render(tiles: &[u8; 16]) -> FrameBuffer {
+    let mut fb = FrameBuffer::new();
     let mut commands = Vec::new();
 
     commands.push(DrawCommand::rect(0, 0, BOARD_PX, BOARD_PX, DARK_BLUE));
@@ -195,30 +194,25 @@ fn render(tiles: &[u8; 16]) -> Vec<u32> {
     }
 
     fb.draw_list(&commands);
-    fb.pixels
+    fb
 }
 
 struct Fifteen;
 
 impl Game for Fifteen {
     const NAME: &'static str = "15 Puzzle";
-    const WIDTH: usize = BOARD_PX as usize;
-    const HEIGHT: usize = BOARD_PX as usize;
     const FPS: usize = 30;
 
-    fn new(args: Vec<String>) -> (u64, Vec<u32>) {
+    fn new(args: Vec<String>) -> (u64, FrameBuffer) {
         let seed = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
         let tiles = scramble(seed);
         (to_u64(&tiles), render(&tiles))
     }
 
-    fn update(state: u64, _held: &[Key], buffered: &[Key]) -> (u64, Vec<u32>) {
+    fn update(state: u64, _held: &[Key], buffered: Option<Key>) -> (u64, FrameBuffer) {
         let mut tiles = from_u64(state);
-        for dir in [Key::Up, Key::Down, Key::Left, Key::Right] {
-            if buffered.contains(&dir) {
-                try_slide(&mut tiles, dir);
-                break;
-            }
+        if let Some(dir @ (Key::Up | Key::Down | Key::Left | Key::Right)) = buffered {
+            try_slide(&mut tiles, dir);
         }
         (to_u64(&tiles), render(&tiles))
     }

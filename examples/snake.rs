@@ -115,14 +115,14 @@ playfield. Head has direction-indicating eyes; tail is drawn smaller
 than body cells to taper visually.
 
 */
-use bitwise_games::Game;
 use bitwise_games::draw_command::{
     BLACK, Color, DARK_GREY, DARK_PURPLE, DrawCommand, GREEN, RED, WHITE,
 };
+use bitwise_games::font::{digits_of, draw_text, text_width};
 use bitwise_games::frame_buffer::FrameBuffer;
 use bitwise_games::rng;
 use bitwise_games::varlen::{from_varlen, to_varlen};
-use minifb::Key;
+use bitwise_games::{Game, Key};
 
 const BOARD_CELLS: u32 = 8;
 const DISPLAY_PX: u32 = 128;
@@ -154,50 +154,6 @@ const MAX_TURNS: usize = 33;
 // "collapsed" snake at the last head position.
 //   (3^34 − 1) / 2 = 8338590849833284
 const DEAD: u64 = (3u64.pow(34) - 1) / 2;
-
-// 3x5 glyph font, MSB = leftmost pixel. Digits 0–9 and the full uppercase
-// alphabet (good candidate to lift into a shared module if more games need it).
-fn glyph(ch: u8) -> [u8; 5] {
-    match ch {
-        b'0' => [0b111, 0b101, 0b101, 0b101, 0b111],
-        b'1' => [0b010, 0b110, 0b010, 0b010, 0b111],
-        b'2' => [0b111, 0b001, 0b111, 0b100, 0b111],
-        b'3' => [0b111, 0b001, 0b111, 0b001, 0b111],
-        b'4' => [0b101, 0b101, 0b111, 0b001, 0b001],
-        b'5' => [0b111, 0b100, 0b111, 0b001, 0b111],
-        b'6' => [0b111, 0b100, 0b111, 0b101, 0b111],
-        b'7' => [0b111, 0b001, 0b001, 0b001, 0b001],
-        b'8' => [0b111, 0b101, 0b111, 0b101, 0b111],
-        b'9' => [0b111, 0b101, 0b111, 0b001, 0b111],
-        b'A' => [0b010, 0b101, 0b111, 0b101, 0b101],
-        b'B' => [0b110, 0b101, 0b110, 0b101, 0b110],
-        b'C' => [0b011, 0b100, 0b100, 0b100, 0b011],
-        b'D' => [0b110, 0b101, 0b101, 0b101, 0b110],
-        b'E' => [0b111, 0b100, 0b110, 0b100, 0b111],
-        b'F' => [0b111, 0b100, 0b110, 0b100, 0b100],
-        b'G' => [0b011, 0b100, 0b101, 0b101, 0b011],
-        b'H' => [0b101, 0b101, 0b111, 0b101, 0b101],
-        b'I' => [0b111, 0b010, 0b010, 0b010, 0b111],
-        b'J' => [0b001, 0b001, 0b001, 0b101, 0b010],
-        b'K' => [0b101, 0b110, 0b100, 0b110, 0b101],
-        b'L' => [0b100, 0b100, 0b100, 0b100, 0b111],
-        b'M' => [0b101, 0b111, 0b111, 0b101, 0b101],
-        b'N' => [0b110, 0b101, 0b101, 0b101, 0b101],
-        b'O' => [0b111, 0b101, 0b101, 0b101, 0b111],
-        b'P' => [0b110, 0b101, 0b110, 0b100, 0b100],
-        b'Q' => [0b111, 0b101, 0b101, 0b110, 0b011],
-        b'R' => [0b110, 0b101, 0b110, 0b101, 0b101],
-        b'S' => [0b011, 0b100, 0b010, 0b001, 0b110],
-        b'T' => [0b111, 0b010, 0b010, 0b010, 0b010],
-        b'U' => [0b101, 0b101, 0b101, 0b101, 0b111],
-        b'V' => [0b101, 0b101, 0b101, 0b101, 0b010],
-        b'W' => [0b101, 0b101, 0b111, 0b111, 0b101],
-        b'X' => [0b101, 0b101, 0b010, 0b101, 0b101],
-        b'Y' => [0b101, 0b101, 0b010, 0b010, 0b010],
-        b'Z' => [0b111, 0b001, 0b010, 0b100, 0b111],
-        _ => [0; 5], // space or unknown
-    }
-}
 
 // --- State encoding ---
 
@@ -325,67 +281,8 @@ fn cell_xy(cell: u8) -> (u32, u32) {
     (GAME_X + col * CELL_PX, GAME_Y + row * CELL_PX)
 }
 
-fn draw_glyph(commands: &mut Vec<DrawCommand>, ch: u8, x: u32, y: u32, scale: u32, color: Color) {
-    let pattern = glyph(ch);
-    for (row, bits) in pattern.iter().enumerate() {
-        for col in 0..3u32 {
-            if (bits >> (2 - col)) & 1 == 1 {
-                commands.push(DrawCommand::rect(
-                    x + col * scale,
-                    y + row as u32 * scale,
-                    scale,
-                    scale,
-                    color,
-                ));
-            }
-        }
-    }
-}
-
-fn draw_text(
-    commands: &mut Vec<DrawCommand>,
-    text: &[u8],
-    x: u32,
-    y: u32,
-    scale: u32,
-    color: Color,
-) {
-    let glyph_w = 3 * scale;
-    let gap = scale;
-    for (i, &ch) in text.iter().enumerate() {
-        draw_glyph(
-            commands,
-            ch,
-            x + i as u32 * (glyph_w + gap),
-            y,
-            scale,
-            color,
-        );
-    }
-}
-
-fn text_width(len: usize, scale: u32) -> u32 {
-    let len = len as u32;
-    if len == 0 {
-        0
-    } else {
-        len * 3 * scale + (len - 1) * scale
-    }
-}
-
 fn draw_number(commands: &mut Vec<DrawCommand>, n: u32, x: u32, y: u32) {
-    let mut digits: Vec<u8> = Vec::new();
-    let mut n = n;
-    if n == 0 {
-        digits.push(b'0');
-    } else {
-        while n > 0 {
-            digits.push(b'0' + (n % 10) as u8);
-            n /= 10;
-        }
-        digits.reverse();
-    }
-    draw_text(commands, &digits, x, y, FONT_SCALE, WHITE);
+    draw_text(commands, &digits_of(n), x, y, FONT_SCALE, WHITE);
 }
 
 fn draw_body_cell(commands: &mut Vec<DrawCommand>, cell: u8) {
@@ -520,8 +417,8 @@ fn fresh_state(seed: u64) -> u64 {
     encode(head, head_dir, apple_bits, body_int)
 }
 
-fn render(state: u64) -> Vec<u32> {
-    let mut fb = FrameBuffer::new(DISPLAY_PX, DISPLAY_PX);
+fn render(state: u64) -> FrameBuffer {
+    let mut fb = FrameBuffer::new();
     let mut commands = Vec::new();
 
     commands.push(DrawCommand::rect(0, 0, DISPLAY_PX, DISPLAY_PX, BLACK));
@@ -614,7 +511,7 @@ fn render(state: u64) -> Vec<u32> {
     }
 
     fb.draw_list(&commands);
-    fb.pixels
+    fb
 }
 
 // --- Game impl ---
@@ -623,22 +520,20 @@ struct SnakeGame;
 
 impl Game for SnakeGame {
     const NAME: &'static str = "Snake";
-    const WIDTH: usize = DISPLAY_PX as usize;
-    const HEIGHT: usize = DISPLAY_PX as usize;
     const FPS: usize = 5;
 
-    fn new(args: Vec<String>) -> (u64, Vec<u32>) {
+    fn new(args: Vec<String>) -> (u64, FrameBuffer) {
         let seed = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
         let state = fresh_state(seed);
         (state, render(state))
     }
 
-    fn update(state: u64, _held: &[Key], buffered: &[Key]) -> (u64, Vec<u32>) {
+    fn update(state: u64, _held: &[Key], buffered: Option<Key>) -> (u64, FrameBuffer) {
         let (head, head_dir, apple_bits, body_int) = decode(state);
 
         // Dead state: Z or X restarts; anything else holds the frozen view.
         if body_int == DEAD {
-            if buffered.contains(&Key::Z) || buffered.contains(&Key::X) {
+            if matches!(buffered, Some(Key::Z) | Some(Key::X)) {
                 let new_state = fresh_state(rng::next(state));
                 return (new_state, render(new_state));
             }
@@ -653,26 +548,25 @@ impl Game for SnakeGame {
 
         // Won state (snake reached max length): freeze, restart on Z/X.
         if turns.len() == MAX_TURNS {
-            if buffered.contains(&Key::Z) || buffered.contains(&Key::X) {
+            if matches!(buffered, Some(Key::Z) | Some(Key::X)) {
                 let new_state = fresh_state(rng::next(state));
                 return (new_state, render(new_state));
             }
             return (state, render(state));
         }
 
-        // Direction from buffered arrows; can't reverse 180°.
-        let mut new_dir = head_dir;
-        for &(key, candidate) in &[
-            (Key::Up, DIR_UP),
-            (Key::Right, DIR_RIGHT),
-            (Key::Down, DIR_DOWN),
-            (Key::Left, DIR_LEFT),
-        ] {
-            if buffered.contains(&key) && candidate != opposite(head_dir) {
-                new_dir = candidate;
-                break;
-            }
-        }
+        // Direction from buffered arrow; can't reverse 180°.
+        let candidate = match buffered {
+            Some(Key::Up) => Some(DIR_UP),
+            Some(Key::Right) => Some(DIR_RIGHT),
+            Some(Key::Down) => Some(DIR_DOWN),
+            Some(Key::Left) => Some(DIR_LEFT),
+            _ => None,
+        };
+        let new_dir = match candidate {
+            Some(d) if d != opposite(head_dir) => d,
+            _ => head_dir,
+        };
 
         // New head position. Off the board → game over.
         let new_head = match step(head, new_dir) {

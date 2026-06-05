@@ -1,5 +1,5 @@
 use crate::Game;
-use minifb::Key;
+use crate::game::Key;
 use std::env;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -8,6 +8,7 @@ use tungstenite::{Message, WebSocket, accept};
 
 const INDEX_HTML: &str = include_str!("client.html");
 const ADDR: &str = "0.0.0.0:3000";
+const BUFFER_CAP: usize = 4;
 
 pub fn run_game<T: Game>() {
     let listener = TcpListener::bind(ADDR).unwrap();
@@ -32,10 +33,7 @@ fn handle_connection<T: Game>(mut stream: TcpStream) -> Option<WebSocket<TcpStre
         accept(stream).ok()
     } else {
         let _ = stream.read(&mut buf);
-        let body = INDEX_HTML
-            .replace("__WIDTH__", &T::WIDTH.to_string())
-            .replace("__HEIGHT__", &T::HEIGHT.to_string())
-            .replace("__NAME__", T::NAME);
+        let body = INDEX_HTML.replace("__NAME__", T::NAME);
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
@@ -46,8 +44,6 @@ fn handle_connection<T: Game>(mut stream: TcpStream) -> Option<WebSocket<TcpStre
     }
 }
 
-const BUFFER_CAP: usize = 4;
-
 fn run_loop<T: Game>(ws: &mut WebSocket<TcpStream>) {
     let args: Vec<String> = env::args().collect();
     let (mut state, mut fb) = T::new(args);
@@ -56,6 +52,11 @@ fn run_loop<T: Game>(ws: &mut WebSocket<TcpStream>) {
     let mut prev_held: Vec<Key> = Vec::new();
     let mut buffer: std::collections::VecDeque<Key> =
         std::collections::VecDeque::with_capacity(BUFFER_CAP);
+
+    // Show the initial frame from `new` before the first tick of input.
+    if ws.send(Message::Binary(fb.as_bytes().to_vec())).is_err() {
+        return;
+    }
 
     loop {
         let start = Instant::now();
@@ -98,18 +99,11 @@ fn run_loop<T: Game>(ws: &mut WebSocket<TcpStream>) {
                 buffer.push_back(*k);
             }
         }
-        let buffered: Vec<Key> = buffer.pop_front().into_iter().collect();
-        (state, fb) = T::update(state, &effective_held, &buffered);
+        let buffered = buffer.pop_front();
+        (state, fb) = T::update(state, &effective_held, buffered);
         prev_held = held.clone();
 
-        let mut bytes = Vec::with_capacity(fb.len() * 4);
-        for px in &fb {
-            bytes.push(((px >> 16) & 0xff) as u8);
-            bytes.push(((px >> 8) & 0xff) as u8);
-            bytes.push((px & 0xff) as u8);
-            bytes.push(0xff);
-        }
-        if ws.send(Message::Binary(bytes)).is_err() {
+        if ws.send(Message::Binary(fb.as_bytes().to_vec())).is_err() {
             return;
         }
 
@@ -128,7 +122,6 @@ fn parse_keys(s: &str) -> Vec<Key> {
 }
 
 fn name_to_key(name: &str) -> Option<Key> {
-    // Only six keys are wired through: arrows + Z + X.
     match name {
         "Up" => Some(Key::Up),
         "Right" => Some(Key::Right),

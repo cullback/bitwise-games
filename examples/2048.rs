@@ -18,38 +18,40 @@ is therefore derived from the board itself via `rng::next` — two games
 that pass through the same board continue identically. The args seed
 only affects the two opening tiles in `new`.
 
+Score and game-over are likewise pure functions of the board:
+  - score = Σ (k - 1) · 2^k over non-empty cells, where k = stored log₂.
+    Equals the points a player would have earned to produce the board
+    assuming every spawn was a 2 (4-spawns push true score slightly
+    above this, but we can't observe spawn history).
+  - game over = no empty cell AND no two adjacent cells (4-neighbour)
+    share a value. On game over, Z resets; the reset seed is
+    `rng::next(state)` so the next board still varies per losing position.
+
 */
-use bitwise_games::Game;
 use bitwise_games::bits::{get_bits, set_bits};
 use bitwise_games::draw_command::{
     BLACK, BLUE, BROWN, Color, DARK_BLUE, DARK_GREEN, DARK_GREY, DARK_PURPLE, DrawCommand, GREEN,
     LAVENDER, LIGHT_GREY, LIGHT_PEACH, ORANGE, PINK, RED, WHITE, YELLOW,
 };
-use bitwise_games::frame_buffer::FrameBuffer;
+use bitwise_games::font::{GLYPH_H, digits_of, draw_text, text_width};
+use bitwise_games::frame_buffer::{self, FrameBuffer};
 use bitwise_games::rng;
-use minifb::Key;
+use bitwise_games::{Game, Key};
 
-const BOARD_PX: u32 = 480;
-const CELL: u32 = BOARD_PX / 4;
-const GAP: u32 = 4;
-const FONT_SCALE: u32 = 5;
-const DIGIT_W: u32 = 3 * FONT_SCALE;
-const DIGIT_H: u32 = 5 * FONT_SCALE;
-const DIGIT_GAP: u32 = FONT_SCALE;
+const BOARD_PX: u32 = frame_buffer::WIDTH;
 
-// 3x5 digit font, MSB = leftmost pixel
-const FONT: [[u8; 5]; 10] = [
-    [0b111, 0b101, 0b101, 0b101, 0b111],
-    [0b010, 0b110, 0b010, 0b010, 0b111],
-    [0b111, 0b001, 0b111, 0b100, 0b111],
-    [0b111, 0b001, 0b111, 0b001, 0b111],
-    [0b101, 0b101, 0b111, 0b001, 0b001],
-    [0b111, 0b100, 0b111, 0b001, 0b111],
-    [0b111, 0b100, 0b111, 0b101, 0b111],
-    [0b111, 0b001, 0b001, 0b001, 0b001],
-    [0b111, 0b101, 0b111, 0b101, 0b111],
-    [0b111, 0b101, 0b111, 0b001, 0b111],
-];
+// Layout: 10-pixel top header (score), then a centred 118×118 grid of 4 cells
+// of 28 px each separated by 2-pixel gaps. Vertically the grid sits flush
+// with the bottom (10 + 4·28 + 3·2 = 128).
+const HEADER_H: u32 = 10;
+const CELL: u32 = 28;
+const GAP: u32 = 2;
+const BOARD_W: u32 = 4 * CELL + 3 * GAP;
+const BOARD_OFFSET_X: u32 = (BOARD_PX - BOARD_W) / 2;
+const BOARD_OFFSET_Y: u32 = HEADER_H;
+
+const FONT_SCALE: u32 = 1;
+const BANNER_SCALE: u32 = 2;
 
 type Board = [[u8; 4]; 4];
 
@@ -175,6 +177,42 @@ fn slide(b: &mut Board, dir: Key) -> bool {
     moved
 }
 
+fn score(b: &Board) -> u32 {
+    let mut s = 0u32;
+    for row in b {
+        for &v in row {
+            if v >= 2 {
+                s += (v as u32 - 1) * (1u32 << v);
+            }
+        }
+    }
+    s
+}
+
+fn has_moves(b: &Board) -> bool {
+    for r in 0..4 {
+        for c in 0..4 {
+            if b[r][c] == 0 {
+                return true;
+            }
+            if c < 3 && b[r][c] == b[r][c + 1] {
+                return true;
+            }
+            if r < 3 && b[r][c] == b[r + 1][c] {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn fresh_board(seed: u64) -> Board {
+    let mut b = [[0u8; 4]; 4];
+    spawn(&mut b, rng::next(seed));
+    spawn(&mut b, rng::next(rng::next(seed)));
+    b
+}
+
 fn tile_color(v: u8) -> Color {
     match v {
         0 => DARK_BLUE,
@@ -204,67 +242,85 @@ fn digit_color(v: u8) -> Color {
     }
 }
 
-fn digits_of(v: u8) -> Vec<u8> {
+fn tile_digits(v: u8) -> Vec<u8> {
     if v == 0 {
-        return Vec::new();
-    }
-    let mut n: u32 = 1u32 << v;
-    let mut out = Vec::new();
-    while n > 0 {
-        out.push((n % 10) as u8);
-        n /= 10;
-    }
-    out.reverse();
-    out
-}
-
-fn draw_digit(commands: &mut Vec<DrawCommand>, digit: u8, x: u32, y: u32, color: Color) {
-    let pattern = FONT[digit as usize];
-    for (row, bits) in pattern.iter().enumerate() {
-        for col in 0..3u32 {
-            if (bits >> (2 - col)) & 1 == 1 {
-                commands.push(DrawCommand::rect(
-                    x + col * FONT_SCALE,
-                    y + row as u32 * FONT_SCALE,
-                    FONT_SCALE,
-                    FONT_SCALE,
-                    color,
-                ));
-            }
-        }
+        Vec::new()
+    } else {
+        digits_of(1u32 << v)
     }
 }
 
 fn draw_tile(commands: &mut Vec<DrawCommand>, r: usize, c: usize, v: u8) {
-    let x = c as u32 * CELL + GAP / 2;
-    let y = r as u32 * CELL + GAP / 2;
-    let w = CELL - GAP;
+    let x = BOARD_OFFSET_X + c as u32 * (CELL + GAP);
+    let y = BOARD_OFFSET_Y + r as u32 * (CELL + GAP);
 
-    commands.push(DrawCommand::rect(x, y, w, w, tile_color(v)));
+    commands.push(DrawCommand::rect(x, y, CELL, CELL, tile_color(v)));
 
-    let digits = digits_of(v);
+    let digits = tile_digits(v);
     if digits.is_empty() {
         return;
     }
 
-    let n = digits.len() as u32;
-    let total_w = n * DIGIT_W + (n - 1) * DIGIT_GAP;
-    let dx = x + (w - total_w) / 2;
-    let dy = y + (w - DIGIT_H) / 2;
+    let total_w = text_width(digits.len(), FONT_SCALE);
+    let glyph_h = GLYPH_H * FONT_SCALE;
+    let dx = x + (CELL - total_w) / 2;
+    let dy = y + (CELL - glyph_h) / 2;
 
-    let color = digit_color(v);
-    let mut cur_x = dx;
-    for &d in &digits {
-        draw_digit(commands, d, cur_x, dy, color);
-        cur_x += DIGIT_W + DIGIT_GAP;
-    }
+    draw_text(commands, &digits, dx, dy, FONT_SCALE, digit_color(v));
 }
 
-fn render(b: &Board) -> Vec<u32> {
-    let mut fb = FrameBuffer::new(BOARD_PX, BOARD_PX);
+fn draw_score(commands: &mut Vec<DrawCommand>, b: &Board) {
+    let digits = digits_of(score(b));
+    let w = text_width(digits.len(), FONT_SCALE);
+    // Right-aligned with 1-pixel margin from the right edge.
+    let x = BOARD_PX - w - 1;
+    draw_text(commands, &digits, x, 2, FONT_SCALE, WHITE);
+}
+
+fn draw_game_over_banner(commands: &mut Vec<DrawCommand>) {
+    let line1 = b"GAME OVER";
+    let line2 = b"PRESS Z";
+    let line1_w = text_width(line1.len(), BANNER_SCALE);
+    let line2_w = text_width(line2.len(), BANNER_SCALE);
+    let banner_w = line1_w.max(line2_w) + 8;
+    let banner_h = 36;
+    let banner_x = (BOARD_PX - banner_w) / 2;
+    let banner_y = (BOARD_PX - banner_h) / 2;
+
+    let color = RED;
+    commands.push(DrawCommand::rect(
+        banner_x, banner_y, banner_w, banner_h, BLACK,
+    ));
+    commands.push(DrawCommand::rect(banner_x, banner_y, banner_w, 1, color));
+    commands.push(DrawCommand::rect(
+        banner_x,
+        banner_y + banner_h - 1,
+        banner_w,
+        1,
+        color,
+    ));
+    commands.push(DrawCommand::rect(banner_x, banner_y, 1, banner_h, color));
+    commands.push(DrawCommand::rect(
+        banner_x + banner_w - 1,
+        banner_y,
+        1,
+        banner_h,
+        color,
+    ));
+
+    let line1_x = banner_x + (banner_w - line1_w) / 2;
+    let line2_x = banner_x + (banner_w - line2_w) / 2;
+    draw_text(commands, line1, line1_x, banner_y + 6, BANNER_SCALE, color);
+    draw_text(commands, line2, line2_x, banner_y + 22, BANNER_SCALE, WHITE);
+}
+
+fn render(b: &Board) -> FrameBuffer {
+    let mut fb = FrameBuffer::new();
     let mut commands = Vec::new();
 
     commands.push(DrawCommand::rect(0, 0, BOARD_PX, BOARD_PX, BLACK));
+
+    draw_score(&mut commands, b);
 
     for r in 0..4 {
         for c in 0..4 {
@@ -272,37 +328,45 @@ fn render(b: &Board) -> Vec<u32> {
         }
     }
 
+    if !has_moves(b) {
+        draw_game_over_banner(&mut commands);
+    }
+
     fb.draw_list(&commands);
-    fb.pixels
+    fb
 }
 
 struct Twenty48;
 
 impl Game for Twenty48 {
     const NAME: &'static str = "2048";
-    const WIDTH: usize = BOARD_PX as usize;
-    const HEIGHT: usize = BOARD_PX as usize;
     const FPS: usize = 30;
 
-    fn new(args: Vec<String>) -> (u64, Vec<u32>) {
+    fn new(args: Vec<String>) -> (u64, FrameBuffer) {
         let seed = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        let mut b = [[0u8; 4]; 4];
-        spawn(&mut b, rng::next(seed));
-        spawn(&mut b, rng::next(rng::next(seed)));
+        let b = fresh_board(seed);
         (to_u64(&b), render(&b))
     }
 
-    fn update(state: u64, _held: &[Key], buffered: &[Key]) -> (u64, Vec<u32>) {
+    fn update(state: u64, _held: &[Key], buffered: Option<Key>) -> (u64, FrameBuffer) {
         let mut b = from_u64(state);
-        for dir in [Key::Up, Key::Down, Key::Left, Key::Right] {
-            if buffered.contains(&dir) {
-                if slide(&mut b, dir) {
-                    let r = rng::next(to_u64(&b));
-                    spawn(&mut b, r);
-                }
-                break;
+
+        if !has_moves(&b) {
+            // Game over: Z resets, anything else holds the frozen view.
+            if buffered == Some(Key::Z) {
+                let new_b = fresh_board(rng::next(state));
+                return (to_u64(&new_b), render(&new_b));
+            }
+            return (state, render(&b));
+        }
+
+        if let Some(dir @ (Key::Up | Key::Down | Key::Left | Key::Right)) = buffered {
+            if slide(&mut b, dir) {
+                let r = rng::next(to_u64(&b));
+                spawn(&mut b, r);
             }
         }
+
         (to_u64(&b), render(&b))
     }
 }
