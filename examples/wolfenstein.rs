@@ -9,8 +9,8 @@ Wolfenstein-style raycaster on a hardcoded 16×16 map.
 
 # Maximize
 
-Smallest viable raycaster. The map is a code constant (one bit per cell,
-16 rows × 16 cols = 256 bits, none on state). Player state is just
+Smallest viable raycaster. The map is a code constant (2 bits per cell,
+16 rows × 16 cols = 512 bits, none on state). Player state is just
 position + heading: 12 bits x, 12 bits y, 8 bits angle. 32 bits used,
 32 free for later (health, doors, ammo, enemies).
 
@@ -40,10 +40,18 @@ perp distance directly as the side_dist value at hit, no extra trig.
 **Sin table.** 256 entries of i16 in fp 256 (range -256..256). Cos is
 sin shifted by 64 (a quarter turn).
 
+**Materials.** Each map cell carries a 2-bit tag: 0 empty, 1 stone, 2
+brick, 3 wood. Each material defines a 3-stop ramp (highlight → mid →
+shadow). Distance shading is a Bayer-4×4 ordered dither between two
+adjacent stops, so depth reads as a smooth gradient instead of hard
+colour rings, and the two faces of every tile stay distinct because
+x-side walls are biased one notch darker.
+
 */
 use bitwise_games::bits::{get_bits, set_bits};
 use bitwise_games::draw_command::{
-    BLACK, BROWN, Color, DARK_BLUE, DARK_GREY, DrawCommand, LIGHT_GREY,
+    BLACK, BROWN, Color, DARK_BLUE, DARK_GREY, DARK_PURPLE, DrawCommand, LIGHT_GREY, ORANGE, PINK,
+    RED, WHITE,
 };
 use bitwise_games::frame_buffer::{FrameBuffer, HEIGHT, WIDTH};
 use bitwise_games::{Game, Key};
@@ -64,36 +72,46 @@ const TILE_SHIFT: u32 = 8;
 const TILE_SIZE: i32 = 1 << TILE_SHIFT; // 256 fp units per tile
 const WORLD_MAX: i32 = MAP_TILES * TILE_SIZE; // 4096
 
-// 1 = wall, 0 = empty. One u16 per row; in the binary literal, the
-// LEFTMOST digit is column 0 — so each row reads like a top-down map.
-// Outer border is solid; interior carves a couple of pillars and a stub
-// wall to give the player something to bump into and look at.
+// Material codes: 2 bits per cell, packed into one u32 per row. In each
+// literal, the LEFTMOST pair is column 0 — so each row reads like a
+// top-down map. Border is stone, with a small NE pillar, a horizontal
+// stone wall splitting the upper half, and a stone chamber in the centre
+// wrapping a wood structure, entered through a brick door from the south.
+const EMPTY: u8 = 0;
+const STONE: u8 = 1;
+const BRICK: u8 = 2;
+const WOOD: u8 = 3;
+
 #[rustfmt::skip]
-const MAP: [u16; 16] = [
-    0b1111111111111111,
-    0b1000000000000001,
-    0b1000000000000001,
-    0b1000000000000001,
-    0b1000111000000001,
-    0b1000100000000001,
-    0b1000100000000001,
-    0b1000100001111001,
-    0b1000000000000001,
-    0b1000000010000001,
-    0b1000000010000001,
-    0b1000010010000001,
-    0b1000010000000001,
-    0b1000000000000001,
-    0b1000000000000001,
-    0b1111111111111111,
+const MAP: [u32; 16] = [
+    0b01_01_01_01_01_01_01_01_01_01_01_01_01_01_01_01,
+    0b01_00_00_00_00_00_00_01_00_00_00_00_00_00_00_01,
+    0b01_00_00_00_00_00_00_01_00_00_00_00_00_00_00_01,
+    0b01_00_00_00_00_00_00_00_00_00_00_00_00_00_00_01,
+    0b01_00_01_01_01_01_00_00_00_01_01_01_01_00_00_01,
+    0b01_00_00_00_00_01_00_00_00_01_00_00_00_00_00_01,
+    0b01_00_00_00_00_01_00_00_00_01_00_00_00_00_00_01,
+    0b01_00_00_00_00_01_00_11_11_01_00_00_00_00_00_01,
+    0b01_00_00_00_00_01_00_11_00_01_00_00_00_00_00_01,
+    0b01_00_00_00_00_01_00_11_11_01_00_00_00_00_00_01,
+    0b01_00_00_00_00_01_00_00_00_01_00_00_00_00_00_01,
+    0b01_00_00_00_00_01_01_10_01_01_00_00_00_00_00_01,
+    0b01_00_00_00_00_00_00_00_00_00_00_00_00_00_00_01,
+    0b01_00_00_00_00_00_00_00_00_00_00_00_00_00_00_01,
+    0b01_00_00_00_00_00_00_00_00_00_00_00_00_00_00_01,
+    0b01_01_01_01_01_01_01_01_01_01_01_01_01_01_01_01,
 ];
 
-fn is_wall(tx: i32, ty: i32) -> bool {
+fn tile_at(tx: i32, ty: i32) -> u8 {
     if !(0..MAP_TILES).contains(&tx) || !(0..MAP_TILES).contains(&ty) {
-        return true;
+        return STONE;
     }
-    // Bit 15 of the literal = column 0 (so the literal reads left-to-right).
-    (MAP[ty as usize] >> (15 - tx)) & 1 != 0
+    let shift = (15 - tx) * 2;
+    ((MAP[ty as usize] >> shift) & 0b11) as u8
+}
+
+fn is_wall(tx: i32, ty: i32) -> bool {
+    tile_at(tx, ty) != EMPTY
 }
 
 // --- Trig ---
@@ -151,6 +169,7 @@ const MAX_DDA_STEPS: u32 = 64;
 struct RayHit {
     perp: i32,    // fp 256; "tile-widths along ray" * 256
     x_side: bool, // hit a vertical wall face (crossed an x-grid line)
+    material: u8,
 }
 
 fn cast_ray(px: i32, py: i32, rdx: i32, rdy: i32) -> Option<RayHit> {
@@ -199,7 +218,8 @@ fn cast_ray(px: i32, py: i32, rdx: i32, rdy: i32) -> Option<RayHit> {
             side_dist_y += delta_y;
             x_side = false;
         }
-        if is_wall(map_x, map_y) {
+        let material = tile_at(map_x, map_y);
+        if material != EMPTY {
             let perp = if x_side {
                 side_dist_x - delta_x
             } else {
@@ -208,6 +228,7 @@ fn cast_ray(px: i32, py: i32, rdx: i32, rdy: i32) -> Option<RayHit> {
             return Some(RayHit {
                 perp: perp as i32,
                 x_side,
+                material,
             });
         }
     }
@@ -240,8 +261,52 @@ fn encode(state: &State) -> u64 {
 
 // --- Render ---
 
-fn shade(x_side: bool) -> Color {
-    if x_side { DARK_GREY } else { LIGHT_GREY }
+// Per-material 3-stop ramp: highlight, mid, shadow. Distance picks two
+// adjacent stops and the Bayer dither chooses between them per pixel.
+const STONE_RAMP: [Color; 3] = [WHITE, LIGHT_GREY, DARK_GREY];
+const BRICK_RAMP: [Color; 3] = [PINK, RED, BROWN];
+const WOOD_RAMP: [Color; 3] = [ORANGE, BROWN, DARK_PURPLE];
+
+// Bayer 4×4: classic ordered-dither threshold matrix, range 0..15.
+#[rustfmt::skip]
+const BAYER: [[u8; 4]; 4] = [
+    [ 0,  8,  2, 10],
+    [12,  4, 14,  6],
+    [ 3, 11,  1,  9],
+    [15,  7, 13,  5],
+];
+
+// Depth at which a wall reaches the full shadow stop, in fp 256. At
+// half this distance the ramp sits exactly on the mid stop; closer is
+// dithered toward highlight, farther is pure shadow.
+const SHADOW_DEPTH: i32 = 12 * TILE_SIZE;
+// x-face walls get bumped one notch darker than y-face walls so a
+// corner reads as two planes rather than a single colour field.
+const X_SIDE_BIAS: i32 = TILE_SIZE;
+
+fn material_ramp(material: u8) -> &'static [Color; 3] {
+    match material {
+        STONE => &STONE_RAMP,
+        BRICK => &BRICK_RAMP,
+        WOOD => &WOOD_RAMP,
+        _ => &STONE_RAMP,
+    }
+}
+
+/// Map distance + side to a dithered pixel colour. `darkness` runs
+/// 0..256 across the full ramp; 0..128 dithers highlight↔mid and
+/// 128..256 dithers mid↔shadow.
+fn dithered_wall_pixel(material: u8, x_side: bool, perp: i32, col: u32, row: u32) -> Color {
+    let ramp = material_ramp(material);
+    let biased = perp + if x_side { X_SIDE_BIAS } else { 0 };
+    let darkness = (biased * 256 / SHADOW_DEPTH).clamp(0, 256);
+    let threshold = BAYER[(row & 3) as usize][(col & 3) as usize] as i32 * 16; // 0..240
+    let (lo, hi, mix) = if darkness < 128 {
+        (ramp[0], ramp[1], darkness * 2) // 0..256
+    } else {
+        (ramp[1], ramp[2], (darkness - 128) * 2)
+    };
+    if mix > threshold { hi } else { lo }
 }
 
 fn render(state: &State) -> FrameBuffer {
@@ -277,8 +342,10 @@ fn render(state: &State) -> FrameBuffer {
         let h = (WALL_H_NUM / hit.perp.max(1)).min(HEIGHT as i32) as u32;
         let top = HORIZON_Y.saturating_sub(h / 2);
         let bottom = (HORIZON_Y + h / 2).min(HEIGHT);
-        let color = shade(hit.x_side);
-        fb.draw(&DrawCommand::rect(col as u32, top, 1, bottom - top, color));
+        for row in top..bottom {
+            let color = dithered_wall_pixel(hit.material, hit.x_side, hit.perp, col as u32, row);
+            fb.pixels[(row * WIDTH + col as u32) as usize] = color;
+        }
     }
 
     // Crosshair.
