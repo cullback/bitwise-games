@@ -1,31 +1,46 @@
 /*
 
-2048 state packed into a u64.
+2048 on a 4×4 grid.
 
-16 cells × 4 bits per cell, storing log₂ of the tile value:
-  0 = empty
-  1 = 2
-  2 = 4
-  3 = 8
-   ...
-  11 = 2048
-   ...
-  15 = 32768 (cap — adjacent 32768s won't merge)
+# Inputs
 
-Cell at (row, col) lives in bits (row*4 + col)*4 .. (row*4 + col)*4 + 4.
-That fills all 64 bits, so there's no room for an RNG state. Spawning
-is therefore derived from the board itself via `rng::next` — two games
-that pass through the same board continue identically. The args seed
-only affects the two opening tiles in `new`.
+- Arrow keys: slide and merge tiles in that direction
+- Z: restart after game-over
 
-Score and game-over are likewise pure functions of the board:
-  - score = Σ (k - 1) · 2^k over non-empty cells, where k = stored log₂.
-    Equals the points a player would have earned to produce the board
-    assuming every spawn was a 2 (4-spawns push true score slightly
-    above this, but we can't observe spawn history).
-  - game over = no empty cell AND no two adjacent cells (4-neighbour)
-    share a value. On game over, Z resets; the reset seed is
-    `rng::next(state)` so the next board still varies per losing position.
+# Maximize
+
+Max tile value reachable within 64 bits. Each cell stores log₂ of its
+tile value in 4 bits: 0 = empty, 1 = 2, 2 = 4, …, 15 = 32768. 4 bits ×
+16 cells = exactly 64 — the budget fills the u64 with no headroom for
+an RNG state. Spawning is therefore derived from the board itself, so
+two games passing through the same board continue identically.
+
+# Encoding
+
+| Start  | Length | Description                                          |
+|--------|--------|------------------------------------------------------|
+|      0 |     64 | 16 cells × 4 bits each, row-major                    |
+
+Cell at (row, col) lives in bits (row*4 + col)*4 .. (row*4 + col)*4 + 4
+and stores log₂ of its tile value (or 0 for empty). Value cap is 32768
+(encoded as 15) — adjacent 32768s won't merge.
+
+# Notes
+
+**No RNG state.** The 64-bit budget fills with cell data, so spawning a
+new tile after a move pulls entropy from the board itself via
+`rng::next(state)`. The `args` seed only affects the two opening tiles
+in `new`.
+
+**Score and game-over are derived.** Both are pure functions of the
+current board:
+  - score = Σ (k − 1) · 2^k over non-empty cells, where k is the stored
+    log₂. Equals the points a player would have earned assuming every
+    spawn was a 2 (4-spawns push true score slightly above, but spawn
+    history isn't observable).
+  - game over = no empty cell AND no two 4-adjacent cells share a
+    value. On game over Z resets; the reset seed is `rng::next(state)`
+    so the next board varies per losing position.
 
 */
 use bitwise_games::bits::{get_bits, set_bits};

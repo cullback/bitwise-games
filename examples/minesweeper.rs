@@ -1,59 +1,60 @@
 /*
 
-Minesweeper on a 7×7 grid, packed into a u64.
+Minesweeper on a 7×7 grid (49 cells, 8 mines).
 
-Bit layout (LSB first):
-- 8 bits:  board seed → 256 boards
-- 56 bits: 35 tri-state cells in base-3, fixed length 35
-           (3^35 ≈ 5.00e16 < 2^56 ≈ 7.21e16)
+# Inputs
 
-# Why 34 cells
+- Mouse: hover highlight (no state)
+- Z: reveal hovered cell (restart after end-of-game)
+- X: toggle flag on hovered cell (restart after end-of-game)
 
-Every cell on the board is one of three things: a mine, a numbered cell
-(at least one adjacent mine), or a zero cell (no adjacent mines). Only
-mines and numbered cells carry per-cell state worth storing — zero
-cells reveal as a cascade and never get flagged in normal play.
+# Maximize
 
-We pick a board (mines + numbered = 35 interactive cells) and lex-order
-them by row-major position. The state's i-th base-3 digit is the
-tri-state of the i-th interactive cell:
+Mine count and puzzle richness within the 64-bit budget. Each
+interactive cell costs log₂(3) ≈ 1.585 bits as a base-3 digit, so 35
+cells = 56 bits (3^35 ≈ 5.0e16 < 2^56 ≈ 7.2e16) and 8 bits left for
+the seed (256 unique boards). 35 interactive cells comfortably hold 8
+mines on a 7×7 — 16.3% density, between easy (12–15%) and intermediate
+(~18%). Pushing to 36 cells would need 58 bits and force the seed below
+64 boards.
 
-  0 = HIDDEN, 1 = REVEALED, 2 = FLAGGED
+# Encoding
 
-# Zero cells don't get their own bits
+| Start | Length | Description                                |
+|-------|--------|--------------------------------------------|
+|     0 |      8 | board seed (256 unique boards)             |
+|     8 |     56 | 35 tri-state cells, base-3 fixed length 35 |
 
-A zero cell is displayed as revealed iff every numbered cell on its
-connected zero-region's border is revealed in state. That captures
-classic flood-fill behaviour:
+Cell digits: 0 = HIDDEN, 1 = REVEALED, 2 = FLAGGED. The i-th digit is
+the tri-state of the i-th interactive cell in row-major order.
 
-  - Clicking a numbered cell N marks just N as revealed.
-  - Clicking a zero cell in region Z marks ALL of Z's bordering
-    numbered cells as revealed in one shot (the flood).
-  - Render walks each region and asks "is every border cell revealed?";
-    if so, fill the region's zeros with the revealed background colour.
+# Notes
 
-The only quirk is that revealing every border cell of a region one-by-
-one without ever clicking the zero will "auto-reveal" the region on
-the last click. Rare and arguably correct — they've earned it.
+**Which cells are interactive.** Every cell on the board is a mine, a
+numbered cell (at least one adjacent mine), or a zero cell (no adjacent
+mines). Only mines and numbered cells carry per-cell state — zero cells
+reveal as a cascade and never get flagged.
 
-# Board generation
+**Zero cells without their own bits.** A zero cell is displayed as
+revealed iff every numbered cell on its connected zero-region's border
+is revealed in state. That captures classic flood-fill: clicking a
+numbered cell N marks just N; clicking a zero in region Z marks every
+numbered cell on Z's border in one shot. The render pass walks each
+region and asks "is every border cell revealed?" — if so, fill the
+region with the revealed colour. The only quirk: revealing every border
+cell of a region one-by-one will "auto-reveal" the region on the last
+click. Rare and arguably correct.
 
-Every tick, `update` must reconstruct the board from the 8-bit seed.
-The seed alone doesn't pin down a board: we pick 8 mines at random
-across the 49 cells, build adjacencies, and reject any placement that
-doesn't yield exactly 35 interactive cells. The first seed-derived
-attempt that satisfies the constraint is the canonical board for that
-seed. At 16.3% raw mine density the expected interactive count sits
-just above 35 with modest variance — the rejection generator converges
-in a handful of attempts per tick.
+**Board regeneration per tick.** `update` reconstructs the board from
+the seed every tick — the seed alone doesn't pin it down, so we pick 8
+mines via `rng::next` and reject any placement that doesn't yield
+exactly 35 interactive cells. At 16.3% density the expected interactive
+count sits just above 35 with modest variance, so the rejection
+generator converges in a handful of attempts per tick.
 
-# Input
-
-- Mouse position drives a hover highlight only — it never enters state.
-  Mouse coords come in as framebuffer pixels (0..128).
-- Z reveals the hovered cell.
-- X toggles a flag on the hovered cell (hidden ↔ flagged).
-- After win/lose, Z or X restarts with a fresh seed derived from rng::next.
+**Win = correct flags.** Win is "every mine flagged AND no non-mine
+flagged", not "every numbered cell revealed" — players have to actively
+assert each mine, no early win from clearing the board.
 
 */
 use bitwise_games::draw_command::{

@@ -1,24 +1,35 @@
 /*
 
-15 puzzle state packed into a u64.
+15 puzzle on a 4×4 grid.
 
-The board is a permutation of the 16 values {0, 1, ..., 15} across 16
-slots, where 0 is the empty slot and 1..15 are the numbered tiles.
-Every reachable (and unreachable) board is one such permutation, so
-the state is simply that permutation's lexicographic rank — computed
-via the permutation module, no bit-packing required.
+# Inputs
 
-There are 16! ≈ 2.09e13 permutations, so the state occupies ≈ 44 bits
-of the u64; the top 20 bits are zero.
+- Arrow keys: slide the tile in that direction into the empty slot
 
-A nice property of the 15 puzzle: only *half* of those 16! permutations
-are actually reachable from the solved state. Every legal slide flips
-both the permutation's parity (it's an odd transposition with the
-empty cell) and the parity of the empty cell's row index, so
-`perm_parity XOR empty_row_parity` is a conserved invariant. We always
-start from solved and apply legal moves, so the scramble only lands
-in solvable states — but a hand-rolled u64 < 16! would be unsolvable
-~50% of the time.
+# Maximize
+
+State space coverage. The board is a permutation of {0, 1, …, 15} (0 =
+empty), and every arrangement gets a unique index 0..16! − 1 ≈ 2.09e13
+via the `permutation` module's lexicographic rank. The rank itself
+*is* the state — no bit-packing involved. ≈44 bits used; the top 20
+bits are unused.
+
+# Encoding
+
+| Start | Length | Description                                            |
+|-------|--------|--------------------------------------------------------|
+|     0 |    ~44 | lex rank of the 16-element permutation (0..16! − 1)    |
+|    44 |    ~20 | unused                                                 |
+
+# Notes
+
+**Parity invariant.** Only half of the 16! permutations are reachable
+from the solved state. Every legal slide flips both the permutation's
+parity (an odd transposition with the empty cell) and the parity of
+the empty cell's row index, so `perm_parity XOR empty_row_parity` is a
+conserved invariant. We start from solved and only apply legal moves,
+so the scramble always lands in solvable states — but a hand-rolled u64
+less than 16! would be unsolvable ~50% of the time.
 
 */
 use bitwise_games::draw_command::{BLUE, DARK_BLUE, DrawCommand, GREEN, WHITE};

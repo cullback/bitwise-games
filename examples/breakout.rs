@@ -1,11 +1,38 @@
 /*
 
-- 64x64 board
-- 40 bits: bricks for 5x8 bricks
--  6 bits: paddle position
-- 12 bits: ball position, 6 bits each for x and y
--  2 bits: ball velocity. Ball can have 4 directions
--  4 bits: free
+Breakout on a 64×64 logical board with 5×8 bricks.
+
+# Inputs
+
+- Left / Right arrows: move the paddle (held = slide continuously)
+
+# Maximize
+
+Brick count and board resolution within 64 bits. 5 × 8 = 40 bricks each
+take one bit (live or destroyed), the paddle position takes 6 bits over
+the 64-px-wide board, and the ball takes 12 bits (6 each for x and y in
+the 64×64 logical space) plus 2 bits for its velocity quadrant. 60 bits
+spoken for; 4 spare.
+
+# Encoding
+
+| Start | Length | Description                                            |
+|-------|--------|--------------------------------------------------------|
+|     0 |     40 | bricks (5 rows × 8 cols, 1 bit per brick; 1 = live)    |
+|    40 |      6 | paddle x position (0..63)                              |
+|    46 |      6 | ball x position (0..63)                                |
+|    52 |      6 | ball y position (0..63)                                |
+|    58 |      2 | ball velocity quadrant (UL=0, UR=1, DL=2, DR=3)        |
+|    60 |      4 | unused                                                 |
+
+# Notes
+
+**Logical vs displayed resolution.** Game logic runs at 64×64; the
+framebuffer is 128×128, so we render at 2× scale.
+
+**Velocity quadrants.** Ball motion is restricted to 4 diagonals — a
+2-bit (dx_sign, dy_sign) pair. No spin or angle variation; collisions
+with walls / paddle / bricks flip the relevant sign.
 
 */
 use bitwise_games::bits::{get_bits, set_bits};

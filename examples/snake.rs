@@ -1,118 +1,78 @@
 /*
 
-Snake on an 8×8 grid, packed into a u64.
+Snake on an 8×8 grid.
 
-Design goal: maximize both board size and max snake length within the
-64-bit state budget. Every encoding choice below is in service of one
-or the other — bigger board, longer reachable snake, or freeing bits
-that can go to either.
+# Inputs
 
-Bit layout (fields packed consecutively, LSB first):
--  6 bits: head position (row*8 + col on the 8×8 grid)
--  2 bits: head direction (0=Up, 1=Right, 2=Down, 3=Left)
--  3 bits: apple entropy (chosen at spawn to dodge the body)
-- 53 bits: body tail — varlen base-3 of "turn" digits.
-           A special sentinel value in this field means game over.
+- Arrow keys: turn the snake
+- Z or X: restart after game-over or win
 
-# Encoding rationale
+# Maximize
 
-## Body as variable-length trinary turns
+Max snake length on an 8×8 board, bounded by the 64-bit budget. Head
+position (6) + head direction (2) + apple entropy (3) = 11 bits spoken
+for; the remaining 53 bits hold the body tail. The body is the
+expensive field — each cell beyond head + an implied first body cell
+is a 3-state turn (Left / Straight / Right relative to the walking
+direction), encoded as a variable-length base-3 integer via `varlen`.
+Trinary varlen of length 0..33 fits in 53 bits ((3^34 − 1) / 2 ≈
+8.34e15 < 2^53 ≈ 9.0e15), so the cap is head + body[0] + 33 turns =
+length 35.
 
-Each cell of the snake's body is adjacent to its neighbours; from any
-body cell, the *next* body cell going toward the tail has only 3 valid
-positions (Left, Straight, Right relative to the direction the snake
-was moving) — backwards would fold the snake into itself, so it's
-forbidden. That makes each step a 3-state choice, which is denser than
-storing absolute direction (4 states, ~1.585 vs 2 bits per cell).
+# Encoding
 
-The body length is variable. We encode it using the var-length base-3
-trick from `varlen` — the integer's value implicitly carries both the
-length and the L/S/R choices, with no separate length field or sentinel.
+| Start | Length | Description                                            |
+|-------|--------|--------------------------------------------------------|
+|     0 |      6 | head cell (row*8 + col on the 8×8 grid)                |
+|     6 |      2 | head direction (0=Up, 1=Right, 2=Down, 3=Left)         |
+|     8 |      3 | apple entropy (chosen at spawn to dodge the body)      |
+|    11 |     53 | body tail — varlen base-3 of L/S/R turns, or DEAD      |
 
-## body[0] is implied
+# Notes
 
-The first body cell (the cell immediately behind the head) is always
-opposite the head's direction — there's no choice there. So we don't
-encode it as a "turn"; it falls out of (head, head_direction). The
-turns we *do* encode are the L/S/R choices at body[1], body[2], ...,
-body[L-1], i.e. one turn per body cell beyond the implied first one.
+**Body as L/S/R turns.** From any body cell, the *next* cell going
+toward the tail has only 3 valid positions (Left, Straight, Right
+relative to the walking direction) — backwards would fold the snake
+into itself. Trinary digits at ≈1.585 bits/cell beat absolute direction
+(2 bits/cell, with one state per step wasted).
 
-This shaves ~log₂(3) ≈ 1.585 bits off the naïve "encode a turn at every
-body cell" scheme — phantom turns at body[0] would have been encoding 3
-choices on a value that physically has only 1.
+**body[0] is implied by (head, head_direction).** The first body cell
+is always opposite the head's direction, so we don't encode it as a
+turn. The turns we *do* encode are L/S/R choices at body[1], …,
+body[L-1]. This shaves one trinary digit (≈1.585 bits) compared to
+encoding a phantom choice at body[0] that physically has only 1 option.
+The direction stays at 2 bits because it's what makes body[0] derivable
+— drop it and the head has 4 interpretations.
 
-## Why direction is still 2 bits
+**Minimum length 2.** Spawn with zero turns: head + the implied body[0].
+`body_int = 0` is a valid live state. At length 2 the rounded head and
+the tapered tail draw right next to each other — looks like a complete
+little snake without needing a body segment.
 
-You might think "if body[0] is implied by head + direction, the
-direction must somehow be free." It isn't — the direction is what makes
-body[0] derivable in the first place. Without it the head has 4
-possible interpretations and we lose the savings.
+**Dead sentinel.** Live varlen range [0, (3^34 − 1)/2) ≈ 8.34e15 fills
+53 bits with ~660e12 unreachable values to spare. We pick
+`body_int = (3^34 − 1)/2` (just past the largest valid encoding) as the
+"dead" sentinel. On death the live body shape is lost (rendered as a
+collapsed length-2), but the encoding stays clean and max length is
+unaffected.
 
-## Minimum snake length = 2
+**Apple position.** The apple cell needs to (1) stay put between eats
+so it doesn't flicker, and (2) regenerate on each eat. Both require it
+to be a pure function of data that's constant between eats — namely
+`snake_length` and the 3 stored `apple_bits`:
 
-Spawn with zero turns: just head + the implied body[0]. The snake
-grows as it eats. body_int = 0 (empty varlen) is a valid live state.
+    apple_cell = rng::next((snake_length << 3) | apple_bits) % 64
 
-A nice rendering side-effect: at length 2 there are no "body" cells
-between the head and the tail, so the rounded head and the tapered
-tail end up drawn right next to each other. That makes the initial
-spawn look like a complete little snake (head adjoining tail) instead
-of needing a body segment to bridge them.
+3 bits over 2 is a free upgrade — neither costs a snake cell since 53
+and 54 body bits both hold L_max = 33. The extra bit drops the
+"apple spawns on body" probability from ~9% to ~0.9% at max length. On
+eat we scan 8 candidate `apple_bits` values and take the first whose
+cell isn't a snake cell; if all 8 collide (~0.9% at max), we accept the
+collision and the apple sits inside the body until the tail clears.
 
-## Body bit budget
-
-We have 53 bits for the body tail. The varlen count for trinary
-sequences of length 0..33 fits in 53 bits:
-
-    (3^34 − 1) / 2  =  8.34 × 10^15  ≤  2^53 = 9.0 × 10^15  ✓
-    (3^35 − 1) / 2  =  2.5  × 10^16  >  2^53                ✗
-
-So we can have at most 33 turns, which means 34 body cells (body[0]
-implied + 33 from turns) and a total snake length of 35.
-
-## Game-over sentinel
-
-The live varlen range is `[0, (3^34 − 1)/2)` ≈ 8.34e15 values, which
-fits in 53 bits with ~660e12 unreachable values to spare. We pick one
-of those unreachable values as the "dead" sentinel — specifically
-`body_int = (3^34 − 1) / 2`, the value just past the largest valid
-encoding. On death we store this value; the live body shape is lost
-(the snake collapses to length 2 visually), but the encoding stays
-clean and max snake length is unaffected.
-
-## Apple: 3 bits of entropy, derived position
-
-The apple's cell needs to:
-  - stay put between eats (so it doesn't flicker as the snake moves)
-  - regenerate to a fresh cell on each eat
-
-Both invariants require apple-cell to be a pure function of data that's
-constant between eats. The only such data we have is `snake_length` and
-the 3 stored `apple_bits`. So:
-
-    apple_cell  =  rng::next((snake_length << 3) | apple_bits)  %  64
-
-3 bits chosen over 2 because it's a free upgrade — both 53 and 54 body
-bits hold the same L_max = 33, so taking one bit from body and giving
-it to apple doesn't cost a snake cell. The extra bit drops the
-"apple-spawns-on-body" probability from ~9% to ~0.9% at max length.
-
-## Apple spawn at eat-time
-
-When the snake eats, we pick `apple_bits` from 8 candidates: starting
-from a state-derived offset, increment until we find one whose
-computed cell isn't a snake cell. If all 8 collide (≈0.9% at max
-snake), we accept the collision — the apple sits "inside" the snake's
-body, and the player has to wait for the tail to move off it. That's
-gameplay-equivalent to a slightly delayed apple, not a hard failure.
-
-## Render
-
-128×128 pixel display. 8×8 grid at 12px per cell, centered horizontally
-in the lower portion of the frame. Top 24px is a score area (snake
-length, drawn with a 3×5 digit font scaled 3×). Thin border around the
-playfield. Head has direction-indicating eyes; tail is drawn smaller
-than body cells to taper visually.
+**Render.** 8×8 grid at 12 px/cell, centred in the lower portion of
+the frame with a 24-px score strip above. Head has direction-indicating
+eyes; tail is tapered; turn cells round the outer corner of the bend.
 
 */
 use bitwise_games::draw_command::{
