@@ -3,9 +3,9 @@
 Minesweeper on a 7×7 grid, packed into a u64.
 
 Bit layout (LSB first):
-- 10 bits: board seed → 1024 boards
-- 54 bits: 34 tri-state cells in base-3, fixed length 34
-           (3^34 ≈ 1.67e16 < 2^54 ≈ 1.80e16)
+- 8 bits:  board seed → 256 boards
+- 56 bits: 35 tri-state cells in base-3, fixed length 35
+           (3^35 ≈ 5.00e16 < 2^56 ≈ 7.21e16)
 
 # Why 34 cells
 
@@ -14,7 +14,7 @@ Every cell on the board is one of three things: a mine, a numbered cell
 mines and numbered cells carry per-cell state worth storing — zero
 cells reveal as a cascade and never get flagged in normal play.
 
-We pick a board (mines + numbered = 34 interactive cells) and lex-order
+We pick a board (mines + numbered = 35 interactive cells) and lex-order
 them by row-major position. The state's i-th base-3 digit is the
 tri-state of the i-th interactive cell:
 
@@ -38,13 +38,13 @@ the last click. Rare and arguably correct — they've earned it.
 
 # Board generation
 
-Every tick, `update` must reconstruct the board from the 10-bit seed.
-The seed alone doesn't pin down a board: we pick 7 mines at random
+Every tick, `update` must reconstruct the board from the 8-bit seed.
+The seed alone doesn't pin down a board: we pick 8 mines at random
 across the 49 cells, build adjacencies, and reject any placement that
-doesn't yield exactly 34 interactive cells. The first seed-derived
+doesn't yield exactly 35 interactive cells. The first seed-derived
 attempt that satisfies the constraint is the canonical board for that
-seed. At 14.3% raw mine density the expected interactive count lands
-close to 34 with modest variance — the rejection generator converges
+seed. At 16.3% raw mine density the expected interactive count sits
+just above 35 with modest variance — the rejection generator converges
 in a handful of attempts per tick.
 
 # Input
@@ -68,10 +68,10 @@ use bitwise_games::{Game, Key};
 const ROWS: usize = 7;
 const COLS: usize = 7;
 const N_CELLS: usize = ROWS * COLS; // 49
-const N_MINES: usize = 7;
-const N_INTERACTIVE: usize = 34;
+const N_MINES: usize = 8;
+const N_INTERACTIVE: usize = 35;
 
-const SEED_BITS: u32 = 10;
+const SEED_BITS: u32 = 8;
 const SEED_MASK: u64 = (1u64 << SEED_BITS) - 1;
 
 // Tri-state values (base-3 digit per cell).
@@ -935,7 +935,7 @@ mod tests {
     fn every_seed_finds_a_valid_board() {
         // Hit-rate sanity: for every 10-bit seed, generation should converge
         // within MAX_GEN_ATTEMPTS and yield exactly 34 interactive cells.
-        for seed in 0..1024u16 {
+        for seed in 0..256u16 {
             let board = generate_board(seed);
             let interactive = board.cell_to_idx.iter().filter(|&&i| i != 255).count();
             assert_eq!(
