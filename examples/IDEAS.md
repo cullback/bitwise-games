@@ -47,16 +47,19 @@
 - 8x8 board
 - 64 cells
 
-## Snake
+## [x] Snake
 
-- Want to maximize snake body length
-- 8x8 board
-- 6 bit head position
-- 2 bit current direction
-- array of 2 bit directions
-- len/score derived from body
-- 4 bit apple position, use last 2 bits of length
-- 64 - 6 - 4- 2x
+- 8x8 grid; 128×128 pixel display upscaled by client
+- 6 bits head pos + 2 bits head dir + 3 bits apple entropy + 53 bits body
+- body[0] is implied by head + direction; body[1..L] are L/S/R turns
+  packed as a varlen base-3 integer
+- Apple cell = `rng::next((length << 3) | apple_bits) % 64`, with
+  spawn picking the first of 8 candidates that doesn't land on the
+  snake; ~0.9% fallback collision rate at max length
+- Death sentinel: body_int = (3^34 − 1)/2 (just past the largest valid
+  varlen). Body shape lost on death (snake collapses to length 2 +
+  X eyes); Z or X restarts
+- Max snake length: 35
 
 ## Space invaders
 
@@ -64,7 +67,7 @@
 
 ## Endless runner
 
-- e.g. gravity guy, jetpack joyride
+- e.g. gravity guy, jetpack joyride, dino run
 - Height
 - Varying difficulty
 
@@ -76,15 +79,18 @@
 ## Simon
 
 - four colors, 2 bits per level
-- Only 32 levels
-- How to identify start?
-- start with a larger part of memory being rng
+- use rng to generate the sequence. ~10 bits?
+- we need a counter for how many guessed right out of how many
+- 8 bits (255 levels)? starts at 1
+- 8 bits: current counter
+- 1 bit: replay mode / play mode
+- use arrow keys for the four options, add colors to them
 
-## Wolfenstein
+## Wolfenstein / Doom / Raycaster
 
 - x,y position
 - direction
-- health, bullets, enemies
+- health, bullets, enemies, doors
 
 ## Lunar lander
 
@@ -93,11 +99,21 @@
 - angle
 - fuel?
 
+## Pinball
+
+- 32x8?
+- ball x,y velocity
+- ball position
+- paddle animation x2
+
 ## Don't see a way
 
 ### Minesweeper
 
 - May not be enough
-- 8x8
+- seed to represent board - 8 bits?
+- 56 components we can click / flag, binary, either flag or reveal
+- how to deal with incorrect flag?
+- we could get a larger board than 8x8 if we set up components correctly
 
 ### Tetris

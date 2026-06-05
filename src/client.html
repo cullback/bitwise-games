@@ -20,6 +20,19 @@
   const imageData = ctx.createImageData(W, H);
   const statusEl = document.getElementById('status');
 
+  // Upscale the canvas to a pleasantly large display size while keeping the
+  // pixel buffer at W×H. Integer scale factor so pixelated rendering stays crisp.
+  function updateScale() {
+    const margin = 0.9;
+    const sx = window.innerWidth * margin / W;
+    const sy = window.innerHeight * margin / H;
+    const scale = Math.max(1, Math.floor(Math.min(sx, sy)));
+    canvas.style.width = (W * scale) + 'px';
+    canvas.style.height = (H * scale) + 'px';
+  }
+  updateScale();
+  window.addEventListener('resize', updateScale);
+
   const ws = new WebSocket(`ws://${location.host}/`);
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => { statusEl.textContent = ''; };
