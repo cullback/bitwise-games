@@ -1,18 +1,29 @@
 # Game ideas
 
-## 2048
+## [x] 2048
 
 - 16 cells
 - 4 bits per cell
 - Represent up to 2^15=32768
 - Derive rng from state
+- Derive score from board state (diverges from original game)
 
-## 15 puzzle
+## [x] 15 puzzle
 
-- 16 cells
-- 4 bits per cell
-- numbers 1 to 15
-- One empty cell
+- State is the lex rank of the board permutation: an index into the
+  16! ≈ 2.09e13 arrangements of {0..16} (0 = empty, 1..15 = tiles)
+- ~44 bits used; top 20 bits sit at zero
+- Only half of those permutations are solvable
+  (perm_parity XOR empty_row_parity is invariant under legal slides)
+
+## [x] Breakout
+
+- 64x64 logical board, scaled up for display
+- 40 bits: brick bitmap (5x8 bricks)
+- 6 bits: paddle x position
+- 12 bits: ball position (6 bits each for x, y)
+- 2 bits: ball velocity (4 diagonal directions)
+- 4 bits: free
 
 ## connect four
 
@@ -38,17 +49,14 @@
 
 ## Snake
 
+- Want to maximize snake body length
 - 8x8 board
 - 6 bit head position
 - 2 bit current direction
 - array of 2 bit directions
 - len/score derived from body
 - 4 bit apple position, use last 2 bits of length
-
-## Breakout
-
-- paddle + ball position
-- Bit array for block field
+- 64 - 6 - 4- 2x
 
 ## Space invaders
 

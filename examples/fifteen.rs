@@ -72,7 +72,7 @@ fn find_empty(tiles: &[u8; 16]) -> usize {
 }
 
 fn is_solved(tiles: &[u8; 16]) -> bool {
-    (0..15).all(|i| tiles[i] == (i + 1) as u8)
+    (0u8..15).all(|i| tiles[usize::from(i)] == i + 1)
 }
 
 // Returns the slot that should move into the empty slot for the given arrow.

@@ -14,9 +14,9 @@
 
 Cell at (row, col) lives in bits (row*4 + col)*4 .. (row*4 + col)*4 + 4.
 That fills all 64 bits, so there's no room for an RNG state. Spawning
-is therefore derived from the board itself (splitmix64 hash of the
-state) — two games that pass through the same board continue
-identically. The args seed only affects the two opening tiles in `new`.
+is therefore derived from the board itself via `rng::next` — two games
+that pass through the same board continue identically. The args seed
+only affects the two opening tiles in `new`.
 
 */
 use bitwise_games::Game;
@@ -26,6 +26,7 @@ use bitwise_games::draw_command::{
     LAVENDER, LIGHT_GREY, LIGHT_PEACH, ORANGE, PINK, RED, WHITE, YELLOW,
 };
 use bitwise_games::frame_buffer::FrameBuffer;
+use bitwise_games::rng;
 use minifb::Key;
 
 const BOARD_PX: u32 = 480;
@@ -84,14 +85,6 @@ fn empties(b: &Board) -> Vec<(usize, usize)> {
         }
     }
     out
-}
-
-// splitmix64 finalizer
-fn hash(x: u64) -> u64 {
-    let mut z = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^ (z >> 31)
 }
 
 fn spawn(b: &mut Board, rng: u64) {
@@ -294,8 +287,8 @@ impl Game for Twenty48 {
     fn new(args: Vec<String>) -> (u64, Vec<u32>) {
         let seed = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
         let mut b = [[0u8; 4]; 4];
-        spawn(&mut b, hash(seed));
-        spawn(&mut b, hash(hash(seed)));
+        spawn(&mut b, rng::next(seed));
+        spawn(&mut b, rng::next(rng::next(seed)));
         (to_u64(&b), render(&b))
     }
 
@@ -304,8 +297,8 @@ impl Game for Twenty48 {
         for dir in [Key::Up, Key::Down, Key::Left, Key::Right] {
             if pressed.contains(&dir) {
                 if slide(&mut b, dir) {
-                    let rng = hash(to_u64(&b));
-                    spawn(&mut b, rng);
+                    let r = rng::next(to_u64(&b));
+                    spawn(&mut b, r);
                 }
                 break;
             }

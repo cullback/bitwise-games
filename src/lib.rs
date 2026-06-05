@@ -3,6 +3,8 @@ pub mod draw_command;
 pub mod frame_buffer;
 mod game;
 pub mod permutation;
+pub mod rng;
+pub mod varlen;
 
 #[cfg(feature = "desktop")]
 mod desktop;
