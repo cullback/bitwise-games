@@ -43,9 +43,9 @@ The seed alone doesn't pin down a board: we pick 7 mines at random
 across the 49 cells, build adjacencies, and reject any placement that
 doesn't yield exactly 34 interactive cells. The first seed-derived
 attempt that satisfies the constraint is the canonical board for that
-seed. At 14.3% mine density, expected interactive count ≈ 33.4 with
-modest variance — the rejection generator converges in a handful of
-attempts per tick. Search bound is generous to avoid edge-case lockup.
+seed. At 14.3% raw mine density the expected interactive count lands
+close to 34 with modest variance — the rejection generator converges
+in a handful of attempts per tick.
 
 # Input
 
@@ -57,8 +57,8 @@ attempts per tick. Search bound is generous to avoid edge-case lockup.
 
 */
 use bitwise_games::draw_command::{
-    BLACK, BLUE, BROWN, Color, DARK_BLUE, DARK_GREEN, DARK_GREY, DARK_PURPLE, DrawCommand, GREEN,
-    LAVENDER, LIGHT_GREY, ORANGE, RED, WHITE,
+    BLACK, BLUE, Color, DARK_GREY, DrawCommand, GREEN, LAVENDER, LIGHT_GREY, ORANGE, PINK, RED,
+    WHITE, YELLOW,
 };
 use bitwise_games::font::{draw_text, glyph};
 use bitwise_games::frame_buffer::{self, FrameBuffer};
@@ -79,15 +79,21 @@ const HIDDEN: u8 = 0;
 const REVEALED: u8 = 1;
 const FLAGGED: u8 = 2;
 
-// Layout: 16-px top status bar with the mines-remaining counter, then a 7×7
-// grid at 16 px/cell = 112×112, centred horizontally. Total: 16 + 112 = 128.
-const CELL_PX: u32 = 16;
-const GRID_PX: u32 = COLS as u32 * CELL_PX;
-const STATUS_H: u32 = 16;
-const GRID_X: u32 = (frame_buffer::WIDTH - GRID_PX) / 2; // 8
-const GRID_Y: u32 = STATUS_H;
-const STATUS_Y: u32 = 3;
+// Layout: 7×7 grid of 13-px cells. Each cell paints a 1-px BLACK top + left
+// border and a 12×12 interior at (cell + 1, cell + 1). A 1-px closing
+// BLACK border on the grid's right + bottom edges seals the box. Total
+// grid: 1 + 7×13 = 92 px. Margin in 128: 18 on every side (symmetric).
+//
+// Even cell interior (12) pairs with the even scale-2 digit (6×10): padding
+// 3 wide, 1 tall — true centring on a single pair of pixels.
+const CELL_PX: u32 = 13;
+const INNER_PX: u32 = CELL_PX - 1; // 12
+const GRID_PX: u32 = COLS as u32 * CELL_PX + 1; // 92
+const GRID_X: u32 = (frame_buffer::WIDTH - GRID_PX) / 2; // 18
+const GRID_Y: u32 = GRID_X;
+const STATUS_Y: u32 = 4;
 const DIGIT_SCALE: u32 = 2;
+const COUNTER_SCALE: u32 = 2;
 
 // Search bound for valid mine placements. Hit rate ~10%; 1000 attempts is
 // vastly more than needed in practice.
@@ -341,13 +347,24 @@ fn is_dead(state: &State, board: &Board) -> bool {
 }
 
 fn is_won(state: &State, board: &Board) -> bool {
-    (0..N_CELLS as u8).all(|cell| {
-        if board.is_mine[cell as usize] || board.counts[cell as usize] == 0 {
-            return true;
-        }
+    // Win = every mine is flagged AND no non-mine cell is flagged.
+    // Revealing the rest is encouraged but not required: the assertion is
+    // about correctly identifying mines, not clearing the board.
+    let mut mines_flagged = 0;
+    for cell in 0..N_CELLS as u8 {
         let idx = board.cell_to_idx[cell as usize];
-        idx == 255 || state.cells[idx as usize] == REVEALED
-    })
+        if idx == 255 {
+            continue;
+        }
+        let flagged = state.cells[idx as usize] == FLAGGED;
+        if flagged && !board.is_mine[cell as usize] {
+            return false;
+        }
+        if board.is_mine[cell as usize] && flagged {
+            mines_flagged += 1;
+        }
+    }
+    mines_flagged == N_MINES
 }
 
 // --- Input ---
@@ -411,15 +428,16 @@ fn apply_flag(state: &mut State, board: &Board, cell: u8) {
 // --- Rendering ---
 
 fn number_color(n: u8) -> Color {
+    // Picked for readability against the DARK_GREY revealed background.
     match n {
         1 => BLUE,
-        2 => DARK_GREEN,
+        2 => GREEN,
         3 => RED,
-        4 => DARK_BLUE,
-        5 => BROWN,
-        6 => LAVENDER,
-        7 => DARK_GREY,
-        _ => DARK_PURPLE,
+        4 => LAVENDER,
+        5 => ORANGE,
+        6 => PINK,
+        7 => WHITE,
+        _ => LIGHT_GREY,
     }
 }
 
@@ -448,72 +466,74 @@ fn draw_digit(
 }
 
 fn draw_cell_background(commands: &mut Vec<DrawCommand>, cell: u8, revealed: bool) {
+    // The grid area is pre-filled BLACK; each cell only paints its 12×12
+    // interior, leaving the surrounding BLACK pixels as the cell's top +
+    // left border (and the grid's closing right + bottom borders for the
+    // last row/column).
     let (x, y) = cell_xy(cell);
+    let ix = x + 1;
+    let iy = y + 1;
     if revealed {
-        // Revealed: light grey fill with a thin darker frame so the grid
-        // structure stays visible inside the flood area.
-        commands.push(DrawCommand::rect(x, y, CELL_PX, CELL_PX, DARK_GREY));
-        commands.push(DrawCommand::rect(
-            x + 1,
-            y + 1,
-            CELL_PX - 1,
-            CELL_PX - 1,
-            LIGHT_GREY,
-        ));
+        commands.push(DrawCommand::rect(ix, iy, INNER_PX, INNER_PX, DARK_GREY));
     } else {
-        // Hidden: raised tile look — light top/left, dark bottom/right.
-        commands.push(DrawCommand::rect(x, y, CELL_PX, CELL_PX, DARK_GREY));
+        // Raised LIGHT_GREY tile with a 1-px WHITE top/left highlight and a
+        // 1-px DARK_GREY bottom/right shadow — classic minesweeper bevel.
+        commands.push(DrawCommand::rect(ix, iy, INNER_PX, INNER_PX, LIGHT_GREY));
+        commands.push(DrawCommand::rect(ix, iy, INNER_PX, 1, WHITE));
+        commands.push(DrawCommand::rect(ix, iy, 1, INNER_PX, WHITE));
         commands.push(DrawCommand::rect(
-            x + 1,
-            y + 1,
-            CELL_PX - 2,
-            CELL_PX - 2,
-            BROWN,
+            ix,
+            iy + INNER_PX - 1,
+            INNER_PX,
+            1,
+            DARK_GREY,
+        ));
+        commands.push(DrawCommand::rect(
+            ix + INNER_PX - 1,
+            iy,
+            1,
+            INNER_PX,
+            DARK_GREY,
         ));
     }
 }
 
 fn draw_flag(commands: &mut Vec<DrawCommand>, cell: u8) {
     let (x, y) = cell_xy(cell);
-    // Pole + right-pointing triangular pennant + base, sized for a 16-px cell.
-    commands.push(DrawCommand::rect(x + 5, y + 3, 1, 11, BLACK));
-    commands.push(DrawCommand::rect(x + 6, y + 3, 6, 1, RED));
-    commands.push(DrawCommand::rect(x + 6, y + 4, 5, 1, RED));
-    commands.push(DrawCommand::rect(x + 6, y + 5, 4, 1, RED));
-    commands.push(DrawCommand::rect(x + 6, y + 6, 3, 1, RED));
-    commands.push(DrawCommand::rect(x + 6, y + 7, 2, 1, RED));
-    commands.push(DrawCommand::rect(x + 6, y + 8, 1, 1, RED));
-    commands.push(DrawCommand::rect(x + 3, y + 13, 9, 1, BLACK));
+    // Pole at col 6, pennant right of pole, base bar at the bottom.
+    // Shifted 1 px up and 1 px left from the previous placement for visual
+    // balance against the bevel.
+    commands.push(DrawCommand::rect(x + 6, y + 2, 1, 8, BLACK));
+    commands.push(DrawCommand::rect(x + 7, y + 2, 4, 1, RED));
+    commands.push(DrawCommand::rect(x + 7, y + 3, 3, 1, RED));
+    commands.push(DrawCommand::rect(x + 7, y + 4, 2, 1, RED));
+    commands.push(DrawCommand::rect(x + 7, y + 5, 1, 1, RED));
+    commands.push(DrawCommand::rect(x + 3, y + 10, 7, 1, BLACK));
 }
 
 fn draw_mine(commands: &mut Vec<DrawCommand>, cell: u8, exploded: bool) {
     let (x, y) = cell_xy(cell);
     if exploded {
-        commands.push(DrawCommand::rect(
-            x + 1,
-            y + 1,
-            CELL_PX - 2,
-            CELL_PX - 2,
-            RED,
-        ));
+        commands.push(DrawCommand::rect(x + 1, y + 1, INNER_PX, INNER_PX, RED));
     }
-    // Cross of spikes through the centre.
-    commands.push(DrawCommand::rect(x + 7, y + 3, 2, 10, BLACK));
-    commands.push(DrawCommand::rect(x + 3, y + 7, 10, 2, BLACK));
-    // Octagonal body: 8×8 square with corner pixels clipped.
-    commands.push(DrawCommand::rect(x + 4, y + 4, 8, 8, BLACK));
-    // Highlight glint.
-    commands.push(DrawCommand::rect(x + 6, y + 5, 2, 2, WHITE));
+    // Cross of spikes centred at (col 8, row 6) — shifted 1 px right and
+    // 1 px up from the geometric cell centre for visual balance.
+    commands.push(DrawCommand::rect(x + 8, y + 2, 1, 9, BLACK));
+    commands.push(DrawCommand::rect(x + 4, y + 6, 9, 1, BLACK));
+    // 5×5 body centred on the cross.
+    commands.push(DrawCommand::rect(x + 6, y + 4, 5, 5, BLACK));
+    // Single-pixel highlight glint, biased toward the upper-left.
+    commands.push(DrawCommand::rect(x + 7, y + 5, 1, 1, WHITE));
 }
 
 fn draw_number(commands: &mut Vec<DrawCommand>, cell: u8, count: u8) {
     let (x, y) = cell_xy(cell);
-    // 3×5 digit at scale 2 = 6×10, centred in a 16×16 cell.
+    // 6×10 scale-2 digit centred in the 12×12 interior: padding 3 wide, 1 tall.
     draw_digit(
         commands,
         count,
-        x + (CELL_PX - 3 * DIGIT_SCALE) / 2,
-        y + (CELL_PX - 5 * DIGIT_SCALE) / 2,
+        x + 1 + (INNER_PX - 3 * DIGIT_SCALE) / 2,
+        y + 1 + (INNER_PX - 5 * DIGIT_SCALE) / 2,
         DIGIT_SCALE,
         number_color(count),
     );
@@ -521,11 +541,19 @@ fn draw_number(commands: &mut Vec<DrawCommand>, cell: u8, count: u8) {
 
 fn draw_hover(commands: &mut Vec<DrawCommand>, cell: u8) {
     let (x, y) = cell_xy(cell);
-    // 1-pixel white frame.
-    commands.push(DrawCommand::rect(x, y, CELL_PX, 1, WHITE));
-    commands.push(DrawCommand::rect(x, y + CELL_PX - 1, CELL_PX, 1, WHITE));
-    commands.push(DrawCommand::rect(x, y, 1, CELL_PX, WHITE));
-    commands.push(DrawCommand::rect(x + CELL_PX - 1, y, 1, CELL_PX, WHITE));
+    // YELLOW ring around the cell's full 12×12 interior — sits 1 px past the
+    // BLACK top+left border and flush with the right+bottom interior edges
+    // (which are flanked by the neighbouring cell's BLACK border).
+    let left = x + 1;
+    let top = y + 1;
+    let right = x + CELL_PX - 1;
+    let bottom = y + CELL_PX - 1;
+    let width = right - left + 1;
+    let height = bottom - top + 1;
+    commands.push(DrawCommand::rect(left, top, width, 1, YELLOW));
+    commands.push(DrawCommand::rect(left, bottom, width, 1, YELLOW));
+    commands.push(DrawCommand::rect(left, top, 1, height, YELLOW));
+    commands.push(DrawCommand::rect(right, top, 1, height, YELLOW));
 }
 
 fn draw_banner(commands: &mut Vec<DrawCommand>, text: &[u8], color: Color) {
@@ -560,6 +588,11 @@ fn render(state: &State, board: &Board, hover: Option<u8>) -> FrameBuffer {
     let dead = is_dead(state, board);
     let won = !dead && is_won(state, board);
 
+    // The grid area starts as a uniform BLACK block; every cell paints just
+    // its 12×12 interior on top, leaving 1-px BLACK pixels between cells as
+    // shared borders and a closing border around the grid's outer edge.
+    commands.push(DrawCommand::rect(GRID_X, GRID_Y, GRID_PX, GRID_PX, BLACK));
+
     // First pass: backgrounds (reveal status determines visual).
     for cell in 0..N_CELLS as u8 {
         let idx = board.cell_to_idx[cell as usize];
@@ -572,6 +605,15 @@ fn render(state: &State, board: &Board, hover: Option<u8>) -> FrameBuffer {
             region != 255 && region_revealed(state, board, region as usize)
         };
         draw_cell_background(&mut commands, cell, revealed);
+    }
+
+    // Hover ring is drawn *before* glyphs so the flag pole, digit, or mine
+    // body lands on top of it — the yellow shows in the gaps the glyph
+    // leaves rather than overpainting the glyph.
+    if !dead && !won {
+        if let Some(cell) = hover {
+            draw_hover(&mut commands, cell);
+        }
     }
 
     // Second pass: glyphs (numbers, mines, flags). Drawn after all backgrounds
@@ -612,22 +654,15 @@ fn render(state: &State, board: &Board, hover: Option<u8>) -> FrameBuffer {
             let idx = board.cell_to_idx[cell as usize];
             if idx != 255 && state.cells[idx as usize] == FLAGGED {
                 let (x, y) = cell_xy(cell);
-                commands.push(DrawCommand::rect(x + 3, y + 3, CELL_PX - 6, 1, RED));
+                commands.push(DrawCommand::rect(x + 2, y + 2, CELL_PX - 4, 1, RED));
                 commands.push(DrawCommand::rect(
-                    x + 3,
-                    y + CELL_PX - 4,
-                    CELL_PX - 6,
+                    x + 2,
+                    y + CELL_PX - 3,
+                    CELL_PX - 4,
                     1,
                     RED,
                 ));
             }
-        }
-    }
-
-    // Hover frame — only when game is live and a cell is hovered.
-    if !dead && !won {
-        if let Some(cell) = hover {
-            draw_hover(&mut commands, cell);
         }
     }
 
@@ -649,10 +684,9 @@ fn render(state: &State, board: &Board, hover: Option<u8>) -> FrameBuffer {
 }
 
 fn draw_counter(commands: &mut Vec<DrawCommand>, remaining: i32) {
-    // Mines-remaining counter, drawn at scale 2 along the status strip below
-    // the grid. Sign bar appears when the player has placed more flags than
-    // there are mines.
-    let scale = 2u32;
+    // Mines-remaining counter at the top status bar, scale 2 (6×10 per digit).
+    // Negative values get a 1-unit-tall horizontal bar before the digits.
+    let scale = COUNTER_SCALE;
     let y = STATUS_Y;
     let mut x = GRID_X;
     if remaining < 0 {
