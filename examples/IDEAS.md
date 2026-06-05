@@ -65,6 +65,13 @@
 
 - at least as hard as breakout
 
+## Jetpack joyride
+
+- ~4 bits animation flip key frames
+- 6 bit height
+- 4 bit velocity
+- 32 bit counter
+
 ## Endless runner
 
 - e.g. gravity guy, jetpack joyride, dino run

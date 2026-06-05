@@ -2,12 +2,17 @@
 
 Snake on an 8×8 grid, packed into a u64.
 
-Bit layout:
-  bits  0.. 5   head position (0..64, row*8 + col)
-  bits  6.. 7   head direction (0=Up, 1=Right, 2=Down, 3=Left)
-  bits  8..10   apple entropy (3 bits, chosen at spawn to dodge the body)
-  bits 11..63   body tail: varlen base-3 of "turn" digits (53 bits)
-                Special value DEAD_SENTINEL means game over.
+Design goal: maximize both board size and max snake length within the
+64-bit state budget. Every encoding choice below is in service of one
+or the other — bigger board, longer reachable snake, or freeing bits
+that can go to either.
+
+Bit layout (fields packed consecutively, LSB first):
+-  6 bits: head position (row*8 + col on the 8×8 grid)
+-  2 bits: head direction (0=Up, 1=Right, 2=Down, 3=Left)
+-  3 bits: apple entropy (chosen at spawn to dodge the body)
+- 53 bits: body tail — varlen base-3 of "turn" digits.
+           A special sentinel value in this field means game over.
 
 # Encoding rationale
 
@@ -47,6 +52,12 @@ possible interpretations and we lose the savings.
 
 Spawn with zero turns: just head + the implied body[0]. The snake
 grows as it eats. body_int = 0 (empty varlen) is a valid live state.
+
+A nice rendering side-effect: at length 2 there are no "body" cells
+between the head and the tail, so the rounded head and the tapered
+tail end up drawn right next to each other. That makes the initial
+spawn look like a complete little snake (head adjoining tail) instead
+of needing a body segment to bridge them.
 
 ## Body bit budget
 
@@ -144,8 +155,8 @@ const MAX_TURNS: usize = 33;
 //   (3^34 − 1) / 2 = 8338590849833284
 const DEAD: u64 = (3u64.pow(34) - 1) / 2;
 
-// 3x5 glyph font, MSB = leftmost pixel. Covers digits + the letters used in
-// the score line and the game-over banner.
+// 3x5 glyph font, MSB = leftmost pixel. Digits 0–9 and the full uppercase
+// alphabet (good candidate to lift into a shared module if more games need it).
 fn glyph(ch: u8) -> [u8; 5] {
     match ch {
         b'0' => [0b111, 0b101, 0b101, 0b101, 0b111],
@@ -159,15 +170,30 @@ fn glyph(ch: u8) -> [u8; 5] {
         b'8' => [0b111, 0b101, 0b111, 0b101, 0b111],
         b'9' => [0b111, 0b101, 0b111, 0b001, 0b111],
         b'A' => [0b010, 0b101, 0b111, 0b101, 0b101],
+        b'B' => [0b110, 0b101, 0b110, 0b101, 0b110],
+        b'C' => [0b011, 0b100, 0b100, 0b100, 0b011],
+        b'D' => [0b110, 0b101, 0b101, 0b101, 0b110],
         b'E' => [0b111, 0b100, 0b110, 0b100, 0b111],
+        b'F' => [0b111, 0b100, 0b110, 0b100, 0b100],
         b'G' => [0b011, 0b100, 0b101, 0b101, 0b011],
+        b'H' => [0b101, 0b101, 0b111, 0b101, 0b101],
+        b'I' => [0b111, 0b010, 0b010, 0b010, 0b111],
+        b'J' => [0b001, 0b001, 0b001, 0b101, 0b010],
+        b'K' => [0b101, 0b110, 0b100, 0b110, 0b101],
+        b'L' => [0b100, 0b100, 0b100, 0b100, 0b111],
         b'M' => [0b101, 0b111, 0b111, 0b101, 0b101],
+        b'N' => [0b110, 0b101, 0b101, 0b101, 0b011],
         b'O' => [0b111, 0b101, 0b101, 0b101, 0b111],
         b'P' => [0b110, 0b101, 0b110, 0b100, 0b100],
+        b'Q' => [0b111, 0b101, 0b101, 0b110, 0b011],
         b'R' => [0b110, 0b101, 0b110, 0b101, 0b101],
         b'S' => [0b011, 0b100, 0b010, 0b001, 0b110],
+        b'T' => [0b111, 0b010, 0b010, 0b010, 0b010],
+        b'U' => [0b101, 0b101, 0b101, 0b101, 0b111],
         b'V' => [0b101, 0b101, 0b101, 0b101, 0b010],
+        b'W' => [0b101, 0b101, 0b111, 0b111, 0b101],
         b'X' => [0b101, 0b101, 0b010, 0b101, 0b101],
+        b'Y' => [0b101, 0b101, 0b010, 0b010, 0b010],
         b'Z' => [0b111, 0b001, 0b010, 0b100, 0b111],
         _ => [0; 5], // space or unknown
     }
@@ -447,12 +473,10 @@ fn draw_apple(commands: &mut Vec<DrawCommand>, cell: u8) {
     ));
 }
 
-fn draw_game_over_banner(commands: &mut Vec<DrawCommand>) {
-    let line1 = b"GAME OVER";
-    let line2 = b"PRESS Z";
+fn draw_banner(commands: &mut Vec<DrawCommand>, line1: &[u8], line2: &[u8], color: Color) {
     let line1_w = text_width(line1.len(), BANNER_SCALE);
     let line2_w = text_width(line2.len(), BANNER_SCALE);
-    let banner_w = line1_w + 8;
+    let banner_w = line1_w.max(line2_w) + 8;
     let banner_h = 36;
     let banner_x = GAME_X + (GAME_SIZE - banner_w) / 2;
     let banner_y = GAME_Y + (GAME_SIZE - banner_h) / 2;
@@ -460,26 +484,26 @@ fn draw_game_over_banner(commands: &mut Vec<DrawCommand>) {
     commands.push(DrawCommand::rect(
         banner_x, banner_y, banner_w, banner_h, BLACK,
     ));
-    commands.push(DrawCommand::rect(banner_x, banner_y, banner_w, 1, RED));
+    commands.push(DrawCommand::rect(banner_x, banner_y, banner_w, 1, color));
     commands.push(DrawCommand::rect(
         banner_x,
         banner_y + banner_h - 1,
         banner_w,
         1,
-        RED,
+        color,
     ));
-    commands.push(DrawCommand::rect(banner_x, banner_y, 1, banner_h, RED));
+    commands.push(DrawCommand::rect(banner_x, banner_y, 1, banner_h, color));
     commands.push(DrawCommand::rect(
         banner_x + banner_w - 1,
         banner_y,
         1,
         banner_h,
-        RED,
+        color,
     ));
 
     let line1_x = banner_x + (banner_w - line1_w) / 2;
     let line2_x = banner_x + (banner_w - line2_w) / 2;
-    draw_text(commands, line1, line1_x, banner_y + 6, BANNER_SCALE, RED);
+    draw_text(commands, line1, line1_x, banner_y + 6, BANNER_SCALE, color);
     draw_text(commands, line2, line2_x, banner_y + 22, BANNER_SCALE, WHITE);
 }
 
@@ -581,9 +605,12 @@ fn render(state: u64) -> Vec<u32> {
     // Head on top
     draw_head_cell(&mut commands, head, head_dir, dead);
 
-    // Game-over banner if dead
+    // Terminal-state banners
+    let won = !dead && turns.len() >= MAX_TURNS;
     if dead {
-        draw_game_over_banner(&mut commands);
+        draw_banner(&mut commands, b"GAME OVER", b"PRESS Z", RED);
+    } else if won {
+        draw_banner(&mut commands, b"YOU WIN", b"PRESS Z", GREEN);
     }
 
     fb.draw_list(&commands);
@@ -621,6 +648,15 @@ impl Game for SnakeGame {
         let turns = to_varlen(body_int, 3);
         if turns.len() > MAX_TURNS {
             // Defensive: shouldn't happen, but if state is corrupt, freeze it.
+            return (state, render(state));
+        }
+
+        // Won state (snake reached max length): freeze, restart on Z/X.
+        if turns.len() == MAX_TURNS {
+            if pressed.contains(&Key::Z) || pressed.contains(&Key::X) {
+                let new_state = fresh_state(rng::next(state));
+                return (new_state, render(new_state));
+            }
             return (state, render(state));
         }
 
