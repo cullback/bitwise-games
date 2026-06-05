@@ -60,7 +60,7 @@ use bitwise_games::draw_command::{
     BLACK, BLUE, Color, DARK_GREY, DrawCommand, GREEN, LAVENDER, LIGHT_GREY, ORANGE, PINK, RED,
     WHITE, YELLOW,
 };
-use bitwise_games::font::{draw_text, glyph};
+use bitwise_games::font::{draw_text, glyph, text_width};
 use bitwise_games::frame_buffer::{self, FrameBuffer};
 use bitwise_games::rng;
 use bitwise_games::{Game, Key};
@@ -94,6 +94,17 @@ const GRID_Y: u32 = GRID_X;
 const STATUS_Y: u32 = 4;
 const DIGIT_SCALE: u32 = 2;
 const COUNTER_SCALE: u32 = 2;
+
+// Outer Windows-style chrome: 2-px raised bevel around the whole 128×128
+// frame (WHITE top/left, DARK_GREY bottom/right), with a LIGHT_GREY
+// background between the bevel and the grid.
+const OUTER_BEVEL: u32 = 2;
+
+// 14×14 smiley button at the top centre. Acts as a status indicator —
+// smiles while playing, X-eyes on death, sunglasses on win.
+const SMILEY_SIZE: u32 = 14;
+const SMILEY_X: u32 = (frame_buffer::WIDTH - SMILEY_SIZE) / 2; // 57
+const SMILEY_Y: u32 = 3;
 
 // Search bound for valid mine placements. Hit rate ~10%; 1000 attempts is
 // vastly more than needed in practice.
@@ -516,14 +527,14 @@ fn draw_mine(commands: &mut Vec<DrawCommand>, cell: u8, exploded: bool) {
     if exploded {
         commands.push(DrawCommand::rect(x + 1, y + 1, INNER_PX, INNER_PX, RED));
     }
-    // Cross of spikes centred at (col 8, row 6) — shifted 1 px right and
+    // Cross of spikes centred at (col 6, row 6) — shifted 1 px left and
     // 1 px up from the geometric cell centre for visual balance.
-    commands.push(DrawCommand::rect(x + 8, y + 2, 1, 9, BLACK));
-    commands.push(DrawCommand::rect(x + 4, y + 6, 9, 1, BLACK));
+    commands.push(DrawCommand::rect(x + 6, y + 2, 1, 9, BLACK));
+    commands.push(DrawCommand::rect(x + 2, y + 6, 9, 1, BLACK));
     // 5×5 body centred on the cross.
-    commands.push(DrawCommand::rect(x + 6, y + 4, 5, 5, BLACK));
+    commands.push(DrawCommand::rect(x + 4, y + 4, 5, 5, BLACK));
     // Single-pixel highlight glint, biased toward the upper-left.
-    commands.push(DrawCommand::rect(x + 7, y + 5, 1, 1, WHITE));
+    commands.push(DrawCommand::rect(x + 5, y + 5, 1, 1, WHITE));
 }
 
 fn draw_number(commands: &mut Vec<DrawCommand>, cell: u8, count: u8) {
@@ -556,6 +567,127 @@ fn draw_hover(commands: &mut Vec<DrawCommand>, cell: u8) {
     commands.push(DrawCommand::rect(right, top, 1, height, YELLOW));
 }
 
+/// 2-px raised bevel around the entire 128×128 frame.
+fn draw_outer_chrome(commands: &mut Vec<DrawCommand>) {
+    let w = frame_buffer::WIDTH;
+    let h = frame_buffer::HEIGHT;
+    // WHITE top + left highlight.
+    commands.push(DrawCommand::rect(0, 0, w, OUTER_BEVEL, WHITE));
+    commands.push(DrawCommand::rect(0, 0, OUTER_BEVEL, h, WHITE));
+    // DARK_GREY bottom + right shadow.
+    commands.push(DrawCommand::rect(
+        0,
+        h - OUTER_BEVEL,
+        w,
+        OUTER_BEVEL,
+        DARK_GREY,
+    ));
+    commands.push(DrawCommand::rect(
+        w - OUTER_BEVEL,
+        0,
+        OUTER_BEVEL,
+        h,
+        DARK_GREY,
+    ));
+}
+
+/// Sunken inset frame around the mines-remaining counter, with a BLACK
+/// background so the ORANGE digits read like a classic 7-segment display.
+fn draw_counter_inset(commands: &mut Vec<DrawCommand>) {
+    let pad: u32 = 2;
+    let x = GRID_X - pad;
+    let y = STATUS_Y - pad;
+    let w = 3 * 3 * COUNTER_SCALE + 2 * COUNTER_SCALE + 2 * pad; // 2 digits + gap + padding
+    let h = 5 * COUNTER_SCALE + 2 * pad; // digit height + padding
+    // Sunken bevel: DARK_GREY top/left, WHITE bottom/right.
+    commands.push(DrawCommand::rect(x, y, w, 1, DARK_GREY));
+    commands.push(DrawCommand::rect(x, y, 1, h, DARK_GREY));
+    commands.push(DrawCommand::rect(x, y + h - 1, w, 1, WHITE));
+    commands.push(DrawCommand::rect(x + w - 1, y, 1, h, WHITE));
+    // BLACK panel interior.
+    commands.push(DrawCommand::rect(x + 1, y + 1, w - 2, h - 2, BLACK));
+}
+
+/// 14×14 smiley face button at the top centre. Three states drive the
+/// expression: live (smile), dead (X eyes + frown), won (sunglasses).
+fn draw_smiley(commands: &mut Vec<DrawCommand>, dead: bool, won: bool) {
+    let bx = SMILEY_X;
+    let by = SMILEY_Y;
+    let bs = SMILEY_SIZE;
+
+    // Raised button bevel: WHITE top/left, DARK_GREY bottom/right, LIGHT_GREY body.
+    commands.push(DrawCommand::rect(bx, by, bs, bs, DARK_GREY));
+    commands.push(DrawCommand::rect(bx, by, bs - 1, bs - 1, WHITE));
+    commands.push(DrawCommand::rect(
+        bx + 1,
+        by + 1,
+        bs - 2,
+        bs - 2,
+        LIGHT_GREY,
+    ));
+
+    // Yellow face: 10×10 with corner pixels trimmed back to body for a rounded look.
+    let fx = bx + 2;
+    let fy = by + 2;
+    commands.push(DrawCommand::rect(fx, fy, 10, 10, YELLOW));
+    commands.push(DrawCommand::rect(fx, fy, 1, 1, LIGHT_GREY));
+    commands.push(DrawCommand::rect(fx + 9, fy, 1, 1, LIGHT_GREY));
+    commands.push(DrawCommand::rect(fx, fy + 9, 1, 1, LIGHT_GREY));
+    commands.push(DrawCommand::rect(fx + 9, fy + 9, 1, 1, LIGHT_GREY));
+
+    if dead {
+        // X eyes — 3×3 cross per eye, separated by a 2-px gap.
+        for &(ex, ey) in &[(fx + 1, fy + 2), (fx + 6, fy + 2)] {
+            commands.push(DrawCommand::rect(ex, ey, 1, 1, BLACK));
+            commands.push(DrawCommand::rect(ex + 2, ey, 1, 1, BLACK));
+            commands.push(DrawCommand::rect(ex + 1, ey + 1, 1, 1, BLACK));
+            commands.push(DrawCommand::rect(ex, ey + 2, 1, 1, BLACK));
+            commands.push(DrawCommand::rect(ex + 2, ey + 2, 1, 1, BLACK));
+        }
+        // Frown at rows 6–7, leaving a clear empty row 5 between eyes and mouth.
+        commands.push(DrawCommand::rect(fx + 2, fy + 6, 6, 1, BLACK));
+        commands.push(DrawCommand::rect(fx + 1, fy + 7, 1, 1, BLACK));
+        commands.push(DrawCommand::rect(fx + 8, fy + 7, 1, 1, BLACK));
+    } else if won {
+        // Two 3×2 lenses joined by a 2-px bridge at the top, with angled
+        // temple arms extending up + out from each lens's upper-outer corner
+        // into the surrounding body chrome.
+        commands.push(DrawCommand::rect(fx + 1, fy + 3, 3, 2, BLACK));
+        commands.push(DrawCommand::rect(fx + 6, fy + 3, 3, 2, BLACK));
+        commands.push(DrawCommand::rect(fx + 4, fy + 3, 2, 1, BLACK));
+        // Left leg: 2-pixel diagonal.
+        commands.push(DrawCommand::rect(fx, fy + 2, 1, 1, BLACK));
+        commands.push(DrawCommand::rect(fx - 1, fy + 1, 1, 1, BLACK));
+        // Right leg: mirror.
+        commands.push(DrawCommand::rect(fx + 9, fy + 2, 1, 1, BLACK));
+        commands.push(DrawCommand::rect(fx + 10, fy + 1, 1, 1, BLACK));
+        // Smile at rows 6–7.
+        commands.push(DrawCommand::rect(fx + 2, fy + 7, 6, 1, BLACK));
+        commands.push(DrawCommand::rect(fx + 1, fy + 6, 1, 1, BLACK));
+        commands.push(DrawCommand::rect(fx + 8, fy + 6, 1, 1, BLACK));
+    } else {
+        // Happy: 2 eye dots at row 3, smile at rows 6–7.
+        commands.push(DrawCommand::rect(fx + 3, fy + 3, 1, 1, BLACK));
+        commands.push(DrawCommand::rect(fx + 6, fy + 3, 1, 1, BLACK));
+        commands.push(DrawCommand::rect(fx + 2, fy + 7, 6, 1, BLACK));
+        commands.push(DrawCommand::rect(fx + 1, fy + 6, 1, 1, BLACK));
+        commands.push(DrawCommand::rect(fx + 8, fy + 6, 1, 1, BLACK));
+    }
+}
+
+/// Centred key-binding hint in the bottom margin of the chrome.
+fn draw_instructions(commands: &mut Vec<DrawCommand>) {
+    let text = b"Z=REVEAL X=FLAG";
+    let scale = 1u32;
+    let w = text_width(text.len(), scale);
+    let x = (frame_buffer::WIDTH - w) / 2;
+    // Vertically centred between the grid's bottom edge and the outer bevel.
+    let top = GRID_Y + GRID_PX;
+    let bottom = frame_buffer::HEIGHT - OUTER_BEVEL;
+    let y = top + (bottom - top - 5 * scale) / 2;
+    draw_text(commands, text, x, y, scale, DARK_GREY);
+}
+
 fn draw_banner(commands: &mut Vec<DrawCommand>, text: &[u8], color: Color) {
     let scale = 2u32;
     let glyph_w = 3 * scale;
@@ -577,16 +709,23 @@ fn render(state: &State, board: &Board, hover: Option<u8>) -> FrameBuffer {
     let mut fb = FrameBuffer::new();
     let mut commands = Vec::new();
 
+    // LIGHT_GREY chrome behind everything, then the outer 2-px raised bevel.
     commands.push(DrawCommand::rect(
         0,
         0,
         frame_buffer::WIDTH,
         frame_buffer::HEIGHT,
-        BLACK,
+        LIGHT_GREY,
     ));
+    draw_outer_chrome(&mut commands);
 
     let dead = is_dead(state, board);
     let won = !dead && is_won(state, board);
+
+    // Counter panel on the left of the status strip, smiley face in the middle.
+    draw_counter_inset(&mut commands);
+    draw_smiley(&mut commands, dead, won);
+    draw_instructions(&mut commands);
 
     // The grid area starts as a uniform BLACK block; every cell paints just
     // its 12×12 interior on top, leaving 1-px BLACK pixels between cells as

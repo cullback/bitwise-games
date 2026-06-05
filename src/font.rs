@@ -3,8 +3,9 @@ use crate::draw_command::{Color, DrawCommand};
 pub const GLYPH_W: u32 = 3;
 pub const GLYPH_H: u32 = 5;
 
-/// 3x5 glyph patterns for digits 0–9 and uppercase A–Z, MSB = leftmost pixel.
-/// Returns a blank pattern for unknown bytes (including spaces).
+/// 3x5 glyph patterns for digits 0–9, uppercase A–Z, and `=`, MSB =
+/// leftmost pixel. Returns a blank pattern for unknown bytes (including
+/// spaces).
 pub fn glyph(ch: u8) -> [u8; 5] {
     match ch {
         b'0' => [0b111, 0b101, 0b101, 0b101, 0b111],
@@ -43,6 +44,7 @@ pub fn glyph(ch: u8) -> [u8; 5] {
         b'X' => [0b101, 0b101, 0b010, 0b101, 0b101],
         b'Y' => [0b101, 0b101, 0b010, 0b010, 0b010],
         b'Z' => [0b111, 0b001, 0b010, 0b100, 0b111],
+        b'=' => [0b000, 0b111, 0b000, 0b111, 0b000],
         _ => [0; 5],
     }
 }
