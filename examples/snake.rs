@@ -116,7 +116,7 @@ than body cells to taper visually.
 
 */
 use bitwise_games::draw_command::{
-    BLACK, Color, DARK_GREY, DARK_PURPLE, DrawCommand, GREEN, RED, WHITE,
+    BLACK, Color, DARK_BLUE, DrawCommand, GREEN, LIGHT_GREY, RED, WHITE,
 };
 use bitwise_games::font::{digits_of, draw_text, text_width};
 use bitwise_games::frame_buffer::FrameBuffer;
@@ -368,20 +368,20 @@ fn draw_body_cell(commands: &mut Vec<DrawCommand>, cell: u8, rounded: Option<Cor
             Corner::BR => (x + CELL_PX - 1, y + CELL_PX - 1, -1, -1),
             Corner::BL => (x, y + CELL_PX - 1, 1, -1),
         };
-        commands.push(DrawCommand::rect(cx, cy, 1, 1, DARK_PURPLE));
+        commands.push(DrawCommand::rect(cx, cy, 1, 1, DARK_BLUE));
         commands.push(DrawCommand::rect(
             (cx as i32 + dx) as u32,
             cy,
             1,
             1,
-            DARK_PURPLE,
+            DARK_BLUE,
         ));
         commands.push(DrawCommand::rect(
             cx,
             (cy as i32 + dy) as u32,
             1,
             1,
-            DARK_PURPLE,
+            DARK_BLUE,
         ));
     }
 }
@@ -540,11 +540,7 @@ fn render(state: &State) -> FrameBuffer {
 
     // Game-area background + border
     commands.push(DrawCommand::rect(
-        GAME_X,
-        GAME_Y,
-        GAME_SIZE,
-        GAME_SIZE,
-        DARK_PURPLE,
+        GAME_X, GAME_Y, GAME_SIZE, GAME_SIZE, DARK_BLUE,
     ));
     // 1-pixel border outline
     commands.push(DrawCommand::rect(
@@ -552,35 +548,29 @@ fn render(state: &State) -> FrameBuffer {
         GAME_Y - 1,
         GAME_SIZE + 2,
         1,
-        DARK_GREY,
+        LIGHT_GREY,
     ));
     commands.push(DrawCommand::rect(
         GAME_X - 1,
         GAME_Y + GAME_SIZE,
         GAME_SIZE + 2,
         1,
-        DARK_GREY,
+        LIGHT_GREY,
     ));
     commands.push(DrawCommand::rect(
         GAME_X - 1,
         GAME_Y,
         1,
         GAME_SIZE,
-        DARK_GREY,
+        LIGHT_GREY,
     ));
     commands.push(DrawCommand::rect(
         GAME_X + GAME_SIZE,
         GAME_Y,
         1,
         GAME_SIZE,
-        DARK_GREY,
+        LIGHT_GREY,
     ));
-
-    // Apple — hidden on death
-    if !dead {
-        let apple = apple_cell(state.length, state.apple_bits);
-        draw_apple(&mut commands, apple);
-    }
 
     // Body (between head and tail). At turn cells, round the outer corner of
     // the bend so the silhouette reads as a smooth curve, not a 90° step.
@@ -600,8 +590,16 @@ fn render(state: &State) -> FrameBuffer {
         draw_tail_cell(&mut commands, *cells.last().unwrap(), body_dir);
     }
 
-    // Head on top
+    // Head on top of the body.
     draw_head_cell(&mut commands, state.head, state.head_dir, dead);
+
+    // Apple drawn last so it stays visible even when it spawns under the
+    // snake's body (≈0.9% at max length — see `pick_apple_bits`). Hidden on
+    // death along with the score.
+    if !dead {
+        let apple = apple_cell(state.length, state.apple_bits);
+        draw_apple(&mut commands, apple);
+    }
 
     // Terminal-state banners
     let won = !dead && state.turns.len() >= MAX_TURNS;
