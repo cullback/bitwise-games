@@ -50,28 +50,34 @@ const FONT: [[u8; 5]; 10] = [
     [0b111, 0b101, 0b111, 0b001, 0b111],
 ];
 
-fn solved_tiles() -> [u8; 16] {
-    let mut t = [0u8; 16];
+struct State {
+    tiles: [u8; 16],
+}
+
+fn solved_board() -> State {
+    let mut tiles = [0u8; 16];
     for i in 0..15 {
-        t[i] = (i + 1) as u8;
+        tiles[i] = (i + 1) as u8;
     }
-    t
+    State { tiles }
 }
 
-fn from_u64(state: u64) -> [u8; 16] {
-    to_permutation(state, &SYMBOLS).try_into().unwrap()
+fn decode(state: u64) -> State {
+    State {
+        tiles: to_permutation(state, &SYMBOLS).try_into().unwrap(),
+    }
 }
 
-fn to_u64(tiles: &[u8; 16]) -> u64 {
-    from_permutation(tiles)
+fn encode(state: &State) -> u64 {
+    from_permutation(&state.tiles)
 }
 
-fn find_empty(tiles: &[u8; 16]) -> usize {
-    tiles.iter().position(|&t| t == 0).unwrap()
+fn find_empty(state: &State) -> usize {
+    state.tiles.iter().position(|&t| t == 0).unwrap()
 }
 
-fn is_solved(tiles: &[u8; 16]) -> bool {
-    (0u8..15).all(|i| tiles[usize::from(i)] == i + 1)
+fn is_solved(state: &State) -> bool {
+    (0u8..15).all(|i| state.tiles[usize::from(i)] == i + 1)
 }
 
 // Returns the slot that should move into the empty slot for the given arrow.
@@ -88,12 +94,12 @@ fn source_slot(empty: usize, dir: Key) -> Option<usize> {
     }
 }
 
-fn try_slide(tiles: &mut [u8; 16], dir: Key) -> bool {
-    let empty = find_empty(tiles);
+fn try_slide(state: &mut State, dir: Key) -> bool {
+    let empty = find_empty(state);
     match source_slot(empty, dir) {
         Some(src) => {
-            tiles[empty] = tiles[src];
-            tiles[src] = 0;
+            state.tiles[empty] = state.tiles[src];
+            state.tiles[src] = 0;
             true
         }
         None => false,
@@ -110,9 +116,9 @@ fn opposite(dir: Key) -> Option<Key> {
     }
 }
 
-fn scramble(seed: u64) -> [u8; 16] {
+fn scramble(seed: u64) -> State {
     let dirs = [Key::Up, Key::Down, Key::Left, Key::Right];
-    let mut tiles = solved_tiles();
+    let mut state = solved_board();
     let mut rng = seed | 1; // avoid zero state
     let mut last_dir: Option<Key> = None;
     let mut moves_made = 0;
@@ -125,12 +131,12 @@ fn scramble(seed: u64) -> [u8; 16] {
         if last_dir.and_then(opposite) == Some(dir) {
             continue;
         }
-        if try_slide(&mut tiles, dir) {
+        if try_slide(&mut state, dir) {
             last_dir = Some(dir);
             moves_made += 1;
         }
     }
-    tiles
+    state
 }
 
 fn draw_digit(commands: &mut Vec<DrawCommand>, digit: u8, x: u32, y: u32) {
@@ -179,15 +185,15 @@ fn draw_tile(commands: &mut Vec<DrawCommand>, slot: usize, value: u8, solved: bo
     }
 }
 
-fn render(tiles: &[u8; 16]) -> FrameBuffer {
+fn render(state: &State) -> FrameBuffer {
     let mut fb = FrameBuffer::new();
     let mut commands = Vec::new();
 
     commands.push(DrawCommand::rect(0, 0, BOARD_PX, BOARD_PX, DARK_BLUE));
 
-    let solved = is_solved(tiles);
+    let solved = is_solved(state);
     for slot in 0..16 {
-        let value = tiles[slot];
+        let value = state.tiles[slot];
         if value > 0 {
             draw_tile(&mut commands, slot, value, solved);
         }
@@ -205,16 +211,16 @@ impl Game for Fifteen {
 
     fn new(args: Vec<String>) -> (u64, FrameBuffer) {
         let seed = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        let tiles = scramble(seed);
-        (to_u64(&tiles), render(&tiles))
+        let state = scramble(seed);
+        (encode(&state), render(&state))
     }
 
     fn update(state: u64, _held: &[Key], buffered: Option<Key>) -> (u64, FrameBuffer) {
-        let mut tiles = from_u64(state);
+        let mut state = decode(state);
         if let Some(dir @ (Key::Up | Key::Down | Key::Left | Key::Right)) = buffered {
-            try_slide(&mut tiles, dir);
+            try_slide(&mut state, dir);
         }
-        (to_u64(&tiles), render(&tiles))
+        (encode(&state), render(&state))
     }
 }
 

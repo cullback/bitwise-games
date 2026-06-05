@@ -53,35 +53,37 @@ const BOARD_OFFSET_Y: u32 = HEADER_H;
 const FONT_SCALE: u32 = 1;
 const BANNER_SCALE: u32 = 2;
 
-type Board = [[u8; 4]; 4];
+struct State {
+    cells: [[u8; 4]; 4],
+}
 
-fn from_u64(state: u64) -> Board {
-    let mut b = [[0u8; 4]; 4];
+fn decode(state: u64) -> State {
+    let mut cells = [[0u8; 4]; 4];
     for r in 0..4u8 {
         for c in 0..4u8 {
             let bit = (r * 4 + c) * 4;
-            b[r as usize][c as usize] = get_bits(state, bit, 4);
+            cells[r as usize][c as usize] = get_bits(state, bit, 4);
         }
     }
-    b
+    State { cells }
 }
 
-fn to_u64(b: &Board) -> u64 {
+fn encode(state: &State) -> u64 {
     let mut result = 0u64;
     for r in 0..4u8 {
         for c in 0..4u8 {
             let bit = (r * 4 + c) * 4;
-            result = set_bits(result, b[r as usize][c as usize], bit, 4);
+            result = set_bits(result, state.cells[r as usize][c as usize], bit, 4);
         }
     }
     result
 }
 
-fn empties(b: &Board) -> Vec<(usize, usize)> {
+fn empties(state: &State) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     for r in 0..4 {
         for c in 0..4 {
-            if b[r][c] == 0 {
+            if state.cells[r][c] == 0 {
                 out.push((r, c));
             }
         }
@@ -89,8 +91,8 @@ fn empties(b: &Board) -> Vec<(usize, usize)> {
     out
 }
 
-fn spawn(b: &mut Board, rng: u64) {
-    let empt = empties(b);
+fn spawn(state: &mut State, rng: u64) {
+    let empt = empties(state);
     if empt.is_empty() {
         return;
     }
@@ -98,7 +100,7 @@ fn spawn(b: &mut Board, rng: u64) {
     // 10% chance of "4" (log₂ = 2), else "2" (log₂ = 1)
     let val = if (rng >> 16) % 10 == 0 { 2 } else { 1 };
     let (r, c) = empt[idx];
-    b[r][c] = val;
+    state.cells[r][c] = val;
 }
 
 fn slide_row_left(row: &mut [u8; 4]) -> bool {
@@ -123,28 +125,28 @@ fn slide_row_left(row: &mut [u8; 4]) -> bool {
     changed
 }
 
-fn transpose(b: &mut Board) {
+fn transpose(state: &mut State) {
     for r in 0..4 {
         for c in (r + 1)..4 {
-            let t = b[r][c];
-            b[r][c] = b[c][r];
-            b[c][r] = t;
+            let t = state.cells[r][c];
+            state.cells[r][c] = state.cells[c][r];
+            state.cells[c][r] = t;
         }
     }
 }
 
-fn slide(b: &mut Board, dir: Key) -> bool {
+fn slide(state: &mut State, dir: Key) -> bool {
     let mut moved = false;
     match dir {
         Key::Left => {
-            for row in b.iter_mut() {
+            for row in state.cells.iter_mut() {
                 if slide_row_left(row) {
                     moved = true;
                 }
             }
         }
         Key::Right => {
-            for row in b.iter_mut() {
+            for row in state.cells.iter_mut() {
                 row.reverse();
                 if slide_row_left(row) {
                     moved = true;
@@ -153,33 +155,33 @@ fn slide(b: &mut Board, dir: Key) -> bool {
             }
         }
         Key::Up => {
-            transpose(b);
-            for row in b.iter_mut() {
+            transpose(state);
+            for row in state.cells.iter_mut() {
                 if slide_row_left(row) {
                     moved = true;
                 }
             }
-            transpose(b);
+            transpose(state);
         }
         Key::Down => {
-            transpose(b);
-            for row in b.iter_mut() {
+            transpose(state);
+            for row in state.cells.iter_mut() {
                 row.reverse();
                 if slide_row_left(row) {
                     moved = true;
                 }
                 row.reverse();
             }
-            transpose(b);
+            transpose(state);
         }
         _ => {}
     }
     moved
 }
 
-fn score(b: &Board) -> u32 {
+fn score(state: &State) -> u32 {
     let mut s = 0u32;
-    for row in b {
+    for row in &state.cells {
         for &v in row {
             if v >= 2 {
                 s += (v as u32 - 1) * (1u32 << v);
@@ -189,16 +191,16 @@ fn score(b: &Board) -> u32 {
     s
 }
 
-fn has_moves(b: &Board) -> bool {
+fn has_moves(state: &State) -> bool {
     for r in 0..4 {
         for c in 0..4 {
-            if b[r][c] == 0 {
+            if state.cells[r][c] == 0 {
                 return true;
             }
-            if c < 3 && b[r][c] == b[r][c + 1] {
+            if c < 3 && state.cells[r][c] == state.cells[r][c + 1] {
                 return true;
             }
-            if r < 3 && b[r][c] == b[r + 1][c] {
+            if r < 3 && state.cells[r][c] == state.cells[r + 1][c] {
                 return true;
             }
         }
@@ -206,11 +208,13 @@ fn has_moves(b: &Board) -> bool {
     false
 }
 
-fn fresh_board(seed: u64) -> Board {
-    let mut b = [[0u8; 4]; 4];
-    spawn(&mut b, rng::next(seed));
-    spawn(&mut b, rng::next(rng::next(seed)));
-    b
+fn fresh_board(seed: u64) -> State {
+    let mut state = State {
+        cells: [[0u8; 4]; 4],
+    };
+    spawn(&mut state, rng::next(seed));
+    spawn(&mut state, rng::next(rng::next(seed)));
+    state
 }
 
 fn tile_color(v: u8) -> Color {
@@ -269,8 +273,8 @@ fn draw_tile(commands: &mut Vec<DrawCommand>, r: usize, c: usize, v: u8) {
     draw_text(commands, &digits, dx, dy, FONT_SCALE, digit_color(v));
 }
 
-fn draw_score(commands: &mut Vec<DrawCommand>, b: &Board) {
-    let digits = digits_of(score(b));
+fn draw_score(commands: &mut Vec<DrawCommand>, state: &State) {
+    let digits = digits_of(score(state));
     let w = text_width(digits.len(), FONT_SCALE);
     // Right-aligned with 1-pixel margin from the right edge.
     let x = BOARD_PX - w - 1;
@@ -314,21 +318,21 @@ fn draw_game_over_banner(commands: &mut Vec<DrawCommand>) {
     draw_text(commands, line2, line2_x, banner_y + 22, BANNER_SCALE, WHITE);
 }
 
-fn render(b: &Board) -> FrameBuffer {
+fn render(state: &State) -> FrameBuffer {
     let mut fb = FrameBuffer::new();
     let mut commands = Vec::new();
 
     commands.push(DrawCommand::rect(0, 0, BOARD_PX, BOARD_PX, BLACK));
 
-    draw_score(&mut commands, b);
+    draw_score(&mut commands, state);
 
     for r in 0..4 {
         for c in 0..4 {
-            draw_tile(&mut commands, r, c, b[r][c]);
+            draw_tile(&mut commands, r, c, state.cells[r][c]);
         }
     }
 
-    if !has_moves(b) {
+    if !has_moves(state) {
         draw_game_over_banner(&mut commands);
     }
 
@@ -344,30 +348,30 @@ impl Game for Twenty48 {
 
     fn new(args: Vec<String>) -> (u64, FrameBuffer) {
         let seed = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        let b = fresh_board(seed);
-        (to_u64(&b), render(&b))
+        let state = fresh_board(seed);
+        (encode(&state), render(&state))
     }
 
     fn update(state: u64, _held: &[Key], buffered: Option<Key>) -> (u64, FrameBuffer) {
-        let mut b = from_u64(state);
+        let mut state = decode(state);
 
-        if !has_moves(&b) {
+        if !has_moves(&state) {
             // Game over: Z resets, anything else holds the frozen view.
             if buffered == Some(Key::Z) {
-                let new_b = fresh_board(rng::next(state));
-                return (to_u64(&new_b), render(&new_b));
+                let new_state = fresh_board(rng::next(encode(&state)));
+                return (encode(&new_state), render(&new_state));
             }
-            return (state, render(&b));
+            return (encode(&state), render(&state));
         }
 
         if let Some(dir @ (Key::Up | Key::Down | Key::Left | Key::Right)) = buffered {
-            if slide(&mut b, dir) {
-                let r = rng::next(to_u64(&b));
-                spawn(&mut b, r);
+            if slide(&mut state, dir) {
+                let r = rng::next(encode(&state));
+                spawn(&mut state, r);
             }
         }
 
-        (to_u64(&b), render(&b))
+        (encode(&state), render(&state))
     }
 }
 

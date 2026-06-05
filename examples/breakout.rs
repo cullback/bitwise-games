@@ -45,7 +45,7 @@ const BALL_UP_RIGHT: u8 = 1;
 const BALL_DOWN_LEFT: u8 = 2;
 const BALL_DOWN_RIGHT: u8 = 3;
 
-struct Breakout {
+struct State {
     bricks: u64,
     paddle_pos: u8,
     ball_pos_x: u8,
@@ -53,13 +53,13 @@ struct Breakout {
     ball_vel: u8,
 }
 
-fn from_u64(state: u64) -> Breakout {
+fn decode(state: u64) -> State {
     let bricks = get_bits(state, 0, N_BRICKS as u8);
     let paddle_pos = get_bits(state, N_BRICKS as u8, 6);
     let ball_pos_x = get_bits(state, (N_BRICKS + 6) as u8, 6);
     let ball_pos_y = get_bits(state, (N_BRICKS + 12) as u8, 6);
     let ball_vel = get_bits(state, (N_BRICKS + 18) as u8, 2);
-    Breakout {
+    State {
         bricks,
         paddle_pos,
         ball_pos_x,
@@ -68,7 +68,7 @@ fn from_u64(state: u64) -> Breakout {
     }
 }
 
-fn to_u64(state: &Breakout) -> u64 {
+fn encode(state: &State) -> u64 {
     let mut result = 0u64;
     result = set_bits(result, state.bricks, 0, N_BRICKS as u8);
     result = set_bits(result, state.paddle_pos, N_BRICKS as u8, 6);
@@ -185,7 +185,7 @@ fn determine_brick_collision_direction(
     !was_vertically_aligned
 }
 
-fn render(state: &Breakout) -> FrameBuffer {
+fn render(state: &State) -> FrameBuffer {
     let mut fb = FrameBuffer::new();
     let mut cmds = Vec::new();
 
@@ -233,14 +233,14 @@ fn render(state: &Breakout) -> FrameBuffer {
 }
 
 // Collision response functions
-fn reset_ball_position(state: &mut Breakout) {
+fn reset_ball_position(state: &mut State) {
     state.ball_pos_x = (BOARD_WIDTH / 2 - BALL_SIZE / 2) as u8;
     state.ball_pos_y = (BOARD_HEIGHT - PADDLE_HEIGHT - BALL_SIZE) as u8;
     state.ball_vel = BALL_UP_RIGHT;
 }
 
 fn handle_wall_collision(
-    state: &mut Breakout,
+    state: &mut State,
     old_ball_x: u8,
     old_ball_y: u8,
     horizontal_hit: bool,
@@ -256,13 +256,13 @@ fn handle_wall_collision(
     }
 }
 
-fn handle_paddle_collision(state: &mut Breakout, old_ball_y: u8) {
+fn handle_paddle_collision(state: &mut State, old_ball_y: u8) {
     state.ball_vel = flip_ball_vertical(state.ball_vel);
     state.ball_pos_y = old_ball_y;
 }
 
 fn handle_brick_collision(
-    state: &mut Breakout,
+    state: &mut State,
     old_ball_x: u8,
     old_ball_y: u8,
     brick_index: u8,
@@ -281,7 +281,7 @@ fn handle_brick_collision(
     }
 }
 
-fn handle_collisions(state: &mut Breakout, dx: i8, dy: i8, old_ball_x: u8, old_ball_y: u8) {
+fn handle_collisions(state: &mut State, dx: i8, dy: i8, old_ball_x: u8, old_ball_y: u8) {
     // Check wall collisions
     let (horizontal_wall, vertical_wall) =
         check_wall_collision(state.ball_pos_x, state.ball_pos_y, dx, dy);
@@ -347,23 +347,25 @@ fn update_paddle_position(paddle_pos: u8, input: &[Key]) -> u8 {
     new_paddle_pos
 }
 
+struct Breakout;
+
 impl Game for Breakout {
     const NAME: &'static str = "Breakout";
     const FPS: usize = 30;
 
     fn new(_args: Vec<String>) -> (u64, FrameBuffer) {
-        let state = Breakout {
+        let state = State {
             bricks: (1 << N_BRICKS) - 1,
             paddle_pos: ((BOARD_WIDTH - PADDLE_WIDTH) / 2) as u8,
             ball_pos_x: ((BOARD_WIDTH - BALL_SIZE) / 2) as u8,
             ball_pos_y: 57, // just above paddle
             ball_vel: BALL_UP_RIGHT,
         };
-        (to_u64(&state), render(&state))
+        (encode(&state), render(&state))
     }
 
-    fn update(state_u64: u64, held: &[Key], _buffered: Option<Key>) -> (u64, FrameBuffer) {
-        let mut state = from_u64(state_u64);
+    fn update(state: u64, held: &[Key], _buffered: Option<Key>) -> (u64, FrameBuffer) {
+        let mut state = decode(state);
 
         state.paddle_pos = update_paddle_position(state.paddle_pos, held);
 
@@ -384,7 +386,7 @@ impl Game for Breakout {
 
         handle_collisions(&mut state, dx, dy, old_ball_x, old_ball_y);
 
-        (to_u64(&state), render(&state))
+        (encode(&state), render(&state))
     }
 }
 
