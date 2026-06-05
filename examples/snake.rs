@@ -164,14 +164,50 @@ struct State {
     /// Body tail as the varlen base-3 turn sequence. `body == DEAD` is the
     /// game-over sentinel; otherwise `to_varlen(body, 3)` reconstructs turns.
     body: u64,
+    /// Decoded body. Empty when `body == DEAD`. Cached so the varlen decode
+    /// runs once per tick instead of twice (update + render both need it).
+    /// Mutators must keep this consistent with `body`; use `set_turns`.
+    turns: Vec<u8>,
+    /// Snake length in cells (head + body). Equals `turns.len() + 2` for
+    /// live states; equals 2 in the dead/collapsed render state (since
+    /// `turns` is empty then). Pure cache — `encode` ignores it.
+    length: usize,
+}
+
+impl State {
+    /// Replace the turn sequence and refresh the derived `body` + `length`.
+    fn set_turns(&mut self, turns: Vec<u8>) {
+        self.body = from_varlen(&turns, 3);
+        self.length = turns.len() + 2;
+        self.turns = turns;
+    }
+
+    /// Transition to the game-over sentinel. The live body shape is discarded;
+    /// rendering falls back to a 2-cell collapsed snake at the current head.
+    fn die(&mut self) {
+        self.body = DEAD;
+        self.turns.clear();
+        self.length = 2;
+    }
 }
 
 fn decode(state: u64) -> State {
+    let body = state >> 11;
+    // DEAD isn't a valid varlen — leave `turns` empty; length stays at the
+    // 2-cell collapsed-render value via `turns.len() + 2`.
+    let turns = if body == DEAD {
+        Vec::new()
+    } else {
+        to_varlen(body, 3)
+    };
+    let length = turns.len() + 2;
     State {
         head: (state & 0x3F) as u8,
         head_dir: ((state >> 6) & 0x3) as u8,
         apple_bits: ((state >> 8) & 0x7) as u8,
-        body: state >> 11,
+        body,
+        turns,
+        length,
     }
 }
 
@@ -295,10 +331,59 @@ fn draw_number(commands: &mut Vec<DrawCommand>, n: u32, x: u32, y: u32) {
     draw_text(commands, &digits_of(n), x, y, FONT_SCALE, WHITE);
 }
 
-fn draw_body_cell(commands: &mut Vec<DrawCommand>, cell: u8) {
+#[derive(Copy, Clone)]
+enum Corner {
+    TL,
+    TR,
+    BR,
+    BL,
+}
+
+/// At a turn cell, the outer corner of the bend (the sharp 90° apex on the
+/// convex side). Given the walking direction arriving at the cell and the
+/// walking direction leaving it, return which of its 4 corners that is.
+fn outer_corner(arrival: u8, departure: u8) -> Corner {
+    match (arrival, departure) {
+        (DIR_DOWN, DIR_RIGHT) | (DIR_LEFT, DIR_UP) => Corner::BL,
+        (DIR_DOWN, DIR_LEFT) | (DIR_RIGHT, DIR_UP) => Corner::BR,
+        (DIR_UP, DIR_RIGHT) | (DIR_LEFT, DIR_DOWN) => Corner::TL,
+        (DIR_UP, DIR_LEFT) | (DIR_RIGHT, DIR_DOWN) => Corner::TR,
+        _ => unreachable!("outer_corner called on a straight (non-turn) cell"),
+    }
+}
+
+fn draw_body_cell(commands: &mut Vec<DrawCommand>, cell: u8, rounded: Option<Corner>) {
     let (x, y) = cell_xy(cell);
     // Fill the whole cell so adjacent body segments connect visually.
     commands.push(DrawCommand::rect(x, y, CELL_PX, CELL_PX, GREEN));
+
+    // At a turn, snip 3 pixels from the outer corner so the bend's convex
+    // perimeter has a 2-pixel diagonal instead of a sharp 90° step — matches
+    // the head's corner rounding. Paint with the playfield colour so the snip
+    // blends with the background.
+    if let Some(corner) = rounded {
+        let (cx, cy, dx, dy) = match corner {
+            Corner::TL => (x, y, 1i32, 1i32),
+            Corner::TR => (x + CELL_PX - 1, y, -1, 1),
+            Corner::BR => (x + CELL_PX - 1, y + CELL_PX - 1, -1, -1),
+            Corner::BL => (x, y + CELL_PX - 1, 1, -1),
+        };
+        commands.push(DrawCommand::rect(cx, cy, 1, 1, DARK_PURPLE));
+        commands.push(DrawCommand::rect(
+            (cx as i32 + dx) as u32,
+            cy,
+            1,
+            1,
+            DARK_PURPLE,
+        ));
+        commands.push(DrawCommand::rect(
+            cx,
+            (cy as i32 + dy) as u32,
+            1,
+            1,
+            DARK_PURPLE,
+        ));
+    }
 }
 
 // Symmetric triangular notch profile for the tail: 0 at edges, 5 at center.
@@ -424,11 +509,14 @@ fn fresh_board(seed: u64) -> State {
     let body = from_varlen(&turns, 3); // = 0
     let cells = snake_cells(head, head_dir, &turns);
     let apple_bits = pick_apple_bits(seed, cells.len(), &cells);
+    let length = turns.len() + 2;
     State {
         head,
         head_dir,
         apple_bits,
         body,
+        turns,
+        length,
     }
 }
 
@@ -439,19 +527,15 @@ fn render(state: &State) -> FrameBuffer {
     commands.push(DrawCommand::rect(0, 0, DISPLAY_PX, DISPLAY_PX, BLACK));
 
     let dead = state.body == DEAD;
-    // On death the body shape is lost (the DEAD value isn't a valid varlen
-    // encoding), so we render a 2-cell collapsed snake at the last head
-    // position. Apple and score are hidden in the death view.
-    let turns = if dead {
-        Vec::new()
-    } else {
-        to_varlen(state.body, 3)
-    };
-    let cells = snake_cells(state.head, state.head_dir, &turns);
+    let cells = snake_cells(state.head, state.head_dir, &state.turns);
+    // dirs[i] is the walking direction at cells[i]: i=0 is head→body[0], and
+    // dirs[i] for i≥1 is the direction body[i-1]→body[i]. Used to detect
+    // turn cells and orient the tail.
+    let dirs = walking_dirs(state.head_dir, &state.turns);
 
     if !dead {
         // Score (snake length) — hidden on death
-        draw_number(&mut commands, cells.len() as u32, 4, 4);
+        draw_number(&mut commands, state.length as u32, 4, 4);
     }
 
     // Game-area background + border
@@ -494,20 +578,23 @@ fn render(state: &State) -> FrameBuffer {
 
     // Apple — hidden on death
     if !dead {
-        let apple = apple_cell(cells.len(), state.apple_bits);
+        let apple = apple_cell(state.length, state.apple_bits);
         draw_apple(&mut commands, apple);
     }
 
-    // Body (between head and tail)
-    if cells.len() >= 3 {
-        for &cell in &cells[1..cells.len() - 1] {
-            draw_body_cell(&mut commands, cell);
+    // Body (between head and tail). At turn cells, round the outer corner of
+    // the bend so the silhouette reads as a smooth curve, not a 90° step.
+    if state.length >= 3 {
+        for i in 1..cells.len() - 1 {
+            let arrival = dirs[i - 1];
+            let departure = dirs[i];
+            let rounded = (arrival != departure).then(|| outer_corner(arrival, departure));
+            draw_body_cell(&mut commands, cells[i], rounded);
         }
     }
 
     // Tail
-    if cells.len() >= 2 {
-        let dirs = walking_dirs(state.head_dir, &turns);
+    if state.length >= 2 {
         let last_walk = dirs[dirs.len() - 1];
         let body_dir = opposite(last_walk); // from tail toward the body
         draw_tail_cell(&mut commands, *cells.last().unwrap(), body_dir);
@@ -517,7 +604,7 @@ fn render(state: &State) -> FrameBuffer {
     draw_head_cell(&mut commands, state.head, state.head_dir, dead);
 
     // Terminal-state banners
-    let won = !dead && turns.len() >= MAX_TURNS;
+    let won = !dead && state.turns.len() >= MAX_TURNS;
     if dead {
         draw_banner(&mut commands, b"GAME OVER", b"PRESS Z", RED);
     } else if won {
@@ -554,14 +641,13 @@ impl Game for SnakeGame {
             return (encode(&state), render(&state));
         }
 
-        let turns = to_varlen(state.body, 3);
-        if turns.len() > MAX_TURNS {
+        if state.turns.len() > MAX_TURNS {
             // Defensive: shouldn't happen, but if state is corrupt, freeze it.
             return (encode(&state), render(&state));
         }
 
         // Won state (snake reached max length): freeze, restart on Z/X.
-        if turns.len() == MAX_TURNS {
+        if state.turns.len() == MAX_TURNS {
             if matches!(buffered, Some(Key::Z) | Some(Key::X)) {
                 let new_state = fresh_board(rng::next(encode(&state)));
                 return (encode(&new_state), render(&new_state));
@@ -586,27 +672,23 @@ impl Game for SnakeGame {
         let new_head = match step(state.head, new_dir) {
             Some(p) => p,
             None => {
-                state.body = DEAD;
+                state.die();
                 return (encode(&state), render(&state));
             }
         };
 
-        let current_cells = snake_cells(state.head, state.head_dir, &turns);
-        let current_apple = apple_cell(current_cells.len(), state.apple_bits);
+        let current_cells = snake_cells(state.head, state.head_dir, &state.turns);
+        let current_apple = apple_cell(state.length, state.apple_bits);
         let ate = new_head == current_apple;
 
         // Self-collision: check against body (and tail, unless it's about to vacate).
-        let body_check_len = if ate {
-            current_cells.len()
-        } else {
-            current_cells.len() - 1
-        };
+        let body_check_len = if ate { state.length } else { state.length - 1 };
         if current_cells[..body_check_len].contains(&new_head) {
-            state.body = DEAD;
+            state.die();
             return (encode(&state), render(&state));
         }
 
-        let can_grow = ate && turns.len() < MAX_TURNS;
+        let can_grow = ate && state.turns.len() < MAX_TURNS;
 
         // New turn sequence:
         //   - Growing: prepend new_first_turn, keep all old turns (length+1).
@@ -615,18 +697,18 @@ impl Game for SnakeGame {
         //   - Non-grow, length 2 (turns empty): no turn to add; the new
         //     body[0] is determined by the new head direction alone.
         let new_first_turn = turn_between(opposite(new_dir), opposite(state.head_dir));
-        let mut new_turns: Vec<u8> = Vec::with_capacity(turns.len() + 1);
+        let mut new_turns: Vec<u8> = Vec::with_capacity(state.turns.len() + 1);
         if can_grow {
             new_turns.push(new_first_turn);
-            new_turns.extend_from_slice(&turns);
-        } else if !turns.is_empty() {
+            new_turns.extend_from_slice(&state.turns);
+        } else if !state.turns.is_empty() {
             new_turns.push(new_first_turn);
-            new_turns.extend_from_slice(&turns[..turns.len() - 1]);
+            new_turns.extend_from_slice(&state.turns[..state.turns.len() - 1]);
         }
-        let new_body = from_varlen(&new_turns, 3);
 
         let new_apple_bits = if ate {
             let new_cells = snake_cells(new_head, new_dir, &new_turns);
+            let new_body = from_varlen(&new_turns, 3);
             let seed = new_body ^ (new_head as u64) ^ ((new_dir as u64) << 6);
             pick_apple_bits(seed, new_cells.len(), &new_cells)
         } else {
@@ -636,7 +718,7 @@ impl Game for SnakeGame {
         state.head = new_head;
         state.head_dir = new_dir;
         state.apple_bits = new_apple_bits;
-        state.body = new_body;
+        state.set_turns(new_turns);
         (encode(&state), render(&state))
     }
 }
