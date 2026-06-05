@@ -6,6 +6,7 @@ mod game;
 pub mod permutation;
 pub mod rng;
 mod server;
+pub mod sprite;
 pub mod varlen;
 
 pub use game::{Game, Key};

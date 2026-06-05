@@ -25,31 +25,6 @@
 - 2 bits: ball velocity (4 diagonal directions)
 - 4 bits: free
 
-## connect four
-
-- 6x7 board = 42 cells
-- 7*3=21 bit heightmap
-- 42 x/o bitboard
-- 63 bits total
-
-## Hangman
-
-- 26 bitmap for guessed letters
-- some bits for index of hidden word
-
-## Lights out
-
-- 8x8 board
-- 64 cells
-- How to initialize random state?
-
-## Conway's game of life
-
-- 8x8 board
-- 64 cells
-- hold z and click cells to pause sim and construct?
-- x to clear?
-
 ## [x] Snake
 
 - 8x8 grid; 128×128 pixel display upscaled by client
@@ -64,16 +39,60 @@
   X eyes); Z or X restarts
 - Max snake length: 35
 
+## [x] Minesweeper
+
+- seed to represent board - 8 bits?
+- 35 components we can click / flag, binary, either flag or reveal
+- how to deal with incorrect flag?
+- we could get a larger board than 8x8 if we set up components correctly
+
+## [x] Lights out
+
+- could do 8x8 but stick to classic 5x5 variant
+- 25 bits of state
+- use remaining for move counter
+
+## connect four
+
+- 6x7 board = 42 cells
+- 7*3=21 bit heightmap
+- 42 x/o bitboard
+- 63 bits total
+
+## Hangman
+
+- 26 bitmap for guessed letters
+- some bits for index of hidden word
+
+## Conway's game of life
+
+- 8x8 board
+- 64 cells
+- hold z and click cells to pause sim and construct?
+- x to clear?
+
 ## Space invaders
 
 - at least as hard as breakout
 
 ## Jetpack joyride
 
-- ~4 bits animation flip key frames
-- 6 bit height
-- 4 bit velocity
-- 32 bit counter
+- side-scroller; hold Z to rise, release to fall
+- 30 FPS, world scrolls ~2 px/frame
+- drop scientists, coins, vehicles
+- hazards (zappers, lasers, missiles) as pure functions of (seed, camera_x)
+- missile telegraph: warning arrow when camera_x ∈ [X - 60, X - 30], live after
+- barry flame/gun frame derived from camera_x while alive
+- barry pose (flame vs fall) from sign of vy
+- score = camera_x
+- camera_x overflow wraps the procgen cycle; no crash
+- 8 bit seed
+- 18 bit camera_x (~73 min)
+- 7 bit barry y
+- 6 bit barry vy (signed)
+- 1 bit dead flag
+- 4 bit death-anim counter (zero while alive; freezes camera_x and ticks on death)
+- 20 bits free
 
 ## Endless runner
 
@@ -117,14 +136,6 @@
 - paddle animation x2
 
 ## Don't see a way
-
-### Minesweeper
-
-- May not be enough
-- seed to represent board - 8 bits?
-- 56 components we can click / flag, binary, either flag or reveal
-- how to deal with incorrect flag?
-- we could get a larger board than 8x8 if we set up components correctly
 
 ### Tetris
 
