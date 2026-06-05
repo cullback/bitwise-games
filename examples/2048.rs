@@ -45,8 +45,8 @@ current board:
 */
 use bitwise_games::bits::{get_bits, set_bits};
 use bitwise_games::draw_command::{
-    BLACK, BLUE, BROWN, Color, DARK_BLUE, DARK_GREEN, DARK_GREY, DARK_PURPLE, DrawCommand, GREEN,
-    LAVENDER, LIGHT_GREY, LIGHT_PEACH, ORANGE, PINK, RED, WHITE, YELLOW,
+    BLACK, BROWN, Color, DARK_GREEN, DARK_GREY, DARK_PURPLE, DrawCommand, LAVENDER, LIGHT_GREY,
+    LIGHT_PEACH, ORANGE, PINK, RED, WHITE, YELLOW,
 };
 use bitwise_games::font::{GLYPH_H, digits_of, draw_text, text_width};
 use bitwise_games::frame_buffer::{self, FrameBuffer};
@@ -55,18 +55,28 @@ use bitwise_games::{Game, Key};
 
 const BOARD_PX: u32 = frame_buffer::WIDTH;
 
-// Layout: 10-pixel top header (score), then a centred 118×118 grid of 4 cells
-// of 28 px each separated by 2-pixel gaps. Vertically the grid sits flush
-// with the bottom (10 + 4·28 + 3·2 = 128).
-const HEADER_H: u32 = 10;
-const CELL: u32 = 28;
+// Layout palette (matches the original web 2048):
+//   - Background: light cream (WHITE)
+//   - Board base: DARK_GREY — shows through the 2-px gaps between tiles as
+//     each cell's border
+//   - Empty cell interior: LIGHT_GREY
+//   - Yellow "2048" badge top-left, score panel top-right
+const HEADER_H: u32 = 20;
+const CELL: u32 = 24;
 const GAP: u32 = 2;
-const BOARD_W: u32 = 4 * CELL + 3 * GAP;
-const BOARD_OFFSET_X: u32 = (BOARD_PX - BOARD_W) / 2;
-const BOARD_OFFSET_Y: u32 = HEADER_H;
+const PAD: u32 = GAP; // DARK_GREY border around the board matches inter-cell gap
+const BOARD_W: u32 = 2 * PAD + 4 * CELL + 3 * GAP; // 106
+const BOARD_OFFSET_X: u32 = (BOARD_PX - BOARD_W) / 2; // 11
+const BOARD_OFFSET_Y: u32 = HEADER_H + 1; // 21
 
 const FONT_SCALE: u32 = 1;
 const BANNER_SCALE: u32 = 2;
+
+// Badge sits at the left edge of the header with "2048" in WHITE.
+const BADGE_X: u32 = BOARD_OFFSET_X;
+const BADGE_Y: u32 = 1;
+const BADGE_SIZE: u32 = 17;
+const SCORE_PANEL_H: u32 = BADGE_SIZE;
 
 struct State {
     cells: [[u8; 4]; 4],
@@ -233,30 +243,33 @@ fn fresh_board(seed: u64) -> State {
 }
 
 fn tile_color(v: u8) -> Color {
+    // Roughly mirrors the original 2048 palette: light cream for the small
+    // tiles, warm orange-red ramp through 32–64, then a yellow series at the
+    // 128+ tier with a few off-palette accents for the late game.
     match v {
-        0 => DARK_BLUE,
-        1 => LIGHT_GREY,
-        2 => LIGHT_PEACH,
-        3 => ORANGE,
-        4 => PINK,
-        5 => RED,
-        6 => YELLOW,
-        7 => GREEN,
-        8 => BLUE,
-        9 => LAVENDER,
-        10 => DARK_PURPLE,
-        11 => DARK_GREEN,
-        12 => BROWN,
-        13 => DARK_GREY,
-        14 => RED,
-        _ => WHITE,
+        0 => LIGHT_GREY,   // empty
+        1 => WHITE,        // 2
+        2 => LIGHT_PEACH,  // 4
+        3 => ORANGE,       // 8
+        4 => PINK,         // 16
+        5 => RED,          // 32
+        6 => DARK_PURPLE,  // 64
+        7 => YELLOW,       // 128
+        8 => YELLOW,       // 256
+        9 => YELLOW,       // 512
+        10 => BROWN,       // 1024
+        11 => YELLOW,      // 2048 (special)
+        12 => DARK_GREEN,  // 4096
+        13 => LAVENDER,    // 8192
+        14 => DARK_PURPLE, // 16384
+        _ => WHITE,        // 32768 cap
     }
 }
 
 fn digit_color(v: u8) -> Color {
     // Light tiles get dark digits, dark tiles get light digits.
     match v {
-        1 | 2 | 3 | 4 | 6 | 7 | 15 => BLACK,
+        1 | 2 | 7 | 8 | 9 | 11 | 15 => BLACK,
         _ => WHITE,
     }
 }
@@ -270,8 +283,8 @@ fn tile_digits(v: u8) -> Vec<u8> {
 }
 
 fn draw_tile(commands: &mut Vec<DrawCommand>, r: usize, c: usize, v: u8) {
-    let x = BOARD_OFFSET_X + c as u32 * (CELL + GAP);
-    let y = BOARD_OFFSET_Y + r as u32 * (CELL + GAP);
+    let x = BOARD_OFFSET_X + PAD + c as u32 * (CELL + GAP);
+    let y = BOARD_OFFSET_Y + PAD + r as u32 * (CELL + GAP);
 
     commands.push(DrawCommand::rect(x, y, CELL, CELL, tile_color(v)));
 
@@ -288,12 +301,44 @@ fn draw_tile(commands: &mut Vec<DrawCommand>, r: usize, c: usize, v: u8) {
     draw_text(commands, &digits, dx, dy, FONT_SCALE, digit_color(v));
 }
 
+/// Yellow "2048" badge at the left of the header with DARK_GREY text —
+/// softer than BLACK while staying readable against the saturated YELLOW.
+fn draw_badge(commands: &mut Vec<DrawCommand>) {
+    commands.push(DrawCommand::rect(
+        BADGE_X, BADGE_Y, BADGE_SIZE, BADGE_SIZE, YELLOW,
+    ));
+    let label = b"2048";
+    let scale = 1u32;
+    let w = text_width(label.len(), scale);
+    let h = GLYPH_H * scale;
+    let tx = BADGE_X + (BADGE_SIZE - w) / 2;
+    let ty = BADGE_Y + (BADGE_SIZE - h) / 2;
+    draw_text(commands, label, tx, ty, scale, DARK_GREY);
+}
+
+/// Score panel to the right of the badge: DARK_GREY background with the
+/// current score in WHITE digits, right-aligned.
 fn draw_score(commands: &mut Vec<DrawCommand>, state: &State) {
+    let panel_y = BADGE_Y;
+    // Panel spans from a small gap right of the badge to a matching gap
+    // before the board's right edge.
+    let panel_x = BADGE_X + BADGE_SIZE + 3;
+    let panel_w = BOARD_OFFSET_X + BOARD_W - panel_x;
+    commands.push(DrawCommand::rect(
+        panel_x,
+        panel_y,
+        panel_w,
+        SCORE_PANEL_H,
+        DARK_GREY,
+    ));
+
     let digits = digits_of(score(state));
-    let w = text_width(digits.len(), FONT_SCALE);
-    // Right-aligned with 1-pixel margin from the right edge.
-    let x = BOARD_PX - w - 1;
-    draw_text(commands, &digits, x, 2, FONT_SCALE, WHITE);
+    let scale = 1u32;
+    let w = text_width(digits.len(), scale);
+    let h = GLYPH_H * scale;
+    let tx = panel_x + panel_w - w - 2;
+    let ty = panel_y + (SCORE_PANEL_H - h) / 2;
+    draw_text(commands, &digits, tx, ty, scale, WHITE);
 }
 
 fn draw_game_over_banner(commands: &mut Vec<DrawCommand>) {
@@ -337,8 +382,20 @@ fn render(state: &State) -> FrameBuffer {
     let mut fb = FrameBuffer::new();
     let mut commands = Vec::new();
 
-    commands.push(DrawCommand::rect(0, 0, BOARD_PX, BOARD_PX, BLACK));
+    // Light cream background (closest PICO-8 colour to the original's #faf8ef).
+    commands.push(DrawCommand::rect(0, 0, BOARD_PX, BOARD_PX, WHITE));
 
+    // Board base: DARK_GREY block under the tiles; the 2-px gaps between
+    // tiles show through as the per-cell borders.
+    commands.push(DrawCommand::rect(
+        BOARD_OFFSET_X,
+        BOARD_OFFSET_Y,
+        BOARD_W,
+        BOARD_W,
+        DARK_GREY,
+    ));
+
+    draw_badge(&mut commands);
     draw_score(&mut commands, state);
 
     for r in 0..4 {
