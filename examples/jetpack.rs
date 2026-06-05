@@ -47,16 +47,12 @@ use bitwise_games::{Game, Key};
 
 // --- World layout ---
 
-const CEILING_H: u32 = 8;
-const FLOOR_Y: u32 = 120;
-const FLOOR_H: u32 = HEIGHT - FLOOR_Y;
-
-const BARRY_X: u32 = 32;
+const BARRY_X: u32 = 20;
 const BARRY_W: u32 = 6;
 const BARRY_H: u32 = 10;
 
-const BARRY_Y_MIN: u32 = CEILING_H;
-const BARRY_Y_MAX: u32 = FLOOR_Y - BARRY_H;
+const BARRY_Y_MIN: u32 = 0;
+const BARRY_Y_MAX: u32 = HEIGHT - BARRY_H;
 
 const SCROLL_PX_PER_FRAME: u32 = 2;
 
@@ -177,12 +173,12 @@ fn zapper_for_chunk(seed: u8, chunk_id: u32) -> Option<Zapper> {
     let cx = (chunk_id * CHUNK_W + CHUNK_W / 2) as i32;
     let lx = (chunk_id * CHUNK_W + 8) as i32;
     let rx = (chunk_id * CHUNK_W + CHUNK_W - 8) as i32;
-    let mid_y = 64i32;
+    let mid_y = (HEIGHT / 2) as i32;
     match pattern_for_chunk(seed, chunk_id) {
         Pattern::Empty => None,
         Pattern::VerticalTop => Some(Zapper {
             x1: cx,
-            y1: CEILING_H as i32,
+            y1: 0,
             x2: cx,
             y2: mid_y,
         }),
@@ -190,19 +186,19 @@ fn zapper_for_chunk(seed: u8, chunk_id: u32) -> Option<Zapper> {
             x1: cx,
             y1: mid_y,
             x2: cx,
-            y2: FLOOR_Y as i32 - 1,
+            y2: HEIGHT as i32 - 1,
         }),
         Pattern::HorizontalHigh => Some(Zapper {
             x1: lx,
-            y1: 30,
+            y1: 28,
             x2: rx,
-            y2: 30,
+            y2: 28,
         }),
         Pattern::HorizontalLow => Some(Zapper {
             x1: lx,
-            y1: 90,
+            y1: 100,
             x2: rx,
-            y2: 90,
+            y2: 100,
         }),
     }
 }
@@ -377,19 +373,8 @@ fn draw_zappers(fb: &mut FrameBuffer, seed: u8, camera_x: u32) {
     }
 }
 
-fn draw_stripes(cmds: &mut Vec<DrawCommand>, y: u32, h: u32, camera_x: u32, color: Color) {
-    // 2-px wide stripes every 16 px of world. World stripe at world_x = N*16
-    // lands on screen at sx = N*16 - camera_x. Scroll feedback for floor/ceiling.
-    let phase = (camera_x % 16) as i32;
-    let mut sx = -phase;
-    while sx < WIDTH as i32 {
-        let x0 = sx.max(0);
-        let x1 = (sx + 2).min(WIDTH as i32);
-        if x1 > x0 {
-            cmds.push(DrawCommand::rect(x0 as u32, y, (x1 - x0) as u32, h, color));
-        }
-        sx += 16;
-    }
+fn draw_background(fb: &mut FrameBuffer) {
+    fb.draw(&DrawCommand::rect(0, 0, WIDTH, HEIGHT, BLACK));
 }
 
 fn draw_banner(fb: &mut FrameBuffer, line1: &[u8], line2: &[u8]) {
@@ -426,17 +411,8 @@ fn draw_banner(fb: &mut FrameBuffer, line1: &[u8], line2: &[u8]) {
 
 fn render(state: &State, z_held: bool) -> FrameBuffer {
     let mut fb = FrameBuffer::new();
-    let mut cmds = Vec::new();
 
-    cmds.push(DrawCommand::rect(0, 0, WIDTH, HEIGHT, BLACK));
-    cmds.push(DrawCommand::rect(0, 0, WIDTH, CEILING_H, DARK_GREY));
-    cmds.push(DrawCommand::rect(0, FLOOR_Y, WIDTH, FLOOR_H, DARK_GREY));
-
-    draw_stripes(&mut cmds, CEILING_H - 1, 1, state.camera_x, LIGHT_GREY);
-    draw_stripes(&mut cmds, FLOOR_Y, 1, state.camera_x, LIGHT_GREY);
-
-    fb.draw_list(&cmds);
-
+    draw_background(&mut fb);
     draw_zappers(&mut fb, state.seed, state.camera_x);
 
     // Jetpack bullets — only when Z held and alive.
@@ -445,7 +421,7 @@ fn render(state: &State, z_held: bool) -> FrameBuffer {
             let phase = (state.camera_x + i * BULLET_STAGGER) % BULLET_FALL_RANGE;
             let bx = BARRY_X + JET_OFFSET_X;
             let by = state.barry_y as u32 + JET_OFFSET_Y + phase;
-            if by < FLOOR_Y {
+            if by < HEIGHT {
                 fb.draw(&DrawCommand::rect(bx, by, 1, 2, YELLOW));
             }
         }
