@@ -125,17 +125,41 @@ use, then provides constant-time rank/unrank.
 
 ## Implementation phases
 
-### Phase Z1 — Data structures + offline DAG capture (this commit)
+### Phase Z1 ✅ — Data structures (committed)
 
 - `src/zdd.rs` skeleton with `Node`, `ZddBuilder`
-- Capture the DP's transitions as a raw DAG (no reduction yet)
-- Unit test: number of root-to-HI paths in raw DAG == frontier DP count
+- `make_node` enforces zero-suppression and hash-consing canonically
+- 5 unit tests pass
 
-### Phase Z2 — Reduction
+### Phase Z2 ⚠ — Construction attempted, hit state-size wall
+
+Implemented `build_saw_zdd(source)` using Knuth's mate-array representation
+edge-by-edge (112 grid edges + 64 dummy = 176 layers). Forward enumeration
+phase OOMs around layer 16 with already ~9K reachable mate states. Each
+mate is 65 bytes (one per grid cell + dummy), so storing
+N_LAYERS × N_STATES × 65 bytes is GB-scale.
+
+**Root cause**: the mate-array representation is too verbose. Knuth's
+SIMPATH packs mate values for only the _active frontier vertices_ — at most
+~10 bytes per state for an 8×8 grid — using a custom queue in `mem[]`.
+Without that compression, the forward enumeration doesn't fit in memory.
+
+### Phase Z2-bis — Replace mate with compact frontier-only state
+
+Before construction can succeed we need:
+
+1. A frontier tracker: which vertices are active at each edge layer.
+2. A compact state representation: only `mate[v]` values for active
+   vertices, packed.
+3. Streaming construction so each layer's state map can be discarded after
+   the next layer is built.
+
+This is the missing piece. It's about ~200 lines on its own.
+
+### Phase Z3 — Reduction
 
 - Implement Sieling-Wegener bottom-up reduction
 - Verify reduced DAG has fewer nodes but same path count
-- Unit test: reduced DAG path count == raw DAG path count
 
 ### Phase Z3 — Length annotation
 
