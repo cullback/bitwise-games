@@ -230,6 +230,123 @@ impl<const W: usize> Saw<W> {
     }
 }
 
+// --- EnumeratedSaw: fully enumerated table for instant rank/unrank ---
+//
+// Trades memory for speed. We enumerate every SAW in canonical order and
+// store them in a flat byte arena (concatenated paths). Decode is a direct
+// array index → slice. Encode hashes the path against a `FxHashMap`.
+//
+// Storage roughly equals
+//   8 bytes/offset × N_paths  +  Σ_paths (length+1)  +  HashMap entries
+// For 8×8 up to L=14 (30M SAWs avg ~8 cells): ≈ 250 MB. Larger combos
+// won't fit in RAM; use `Saw` (navigation-based) for those.
+
+use rustc_hash::FxHashMap;
+
+pub struct EnumeratedSaw<const W: usize> {
+    /// All path bytes concatenated. The i-th path lives at
+    /// `arena[offsets[i] .. offsets[i+1]]`.
+    arena: Vec<u8>,
+    /// Offsets into `arena`. Always has `total + 1` entries (sentinel at end).
+    offsets: Vec<u32>,
+    /// For O(1) encode: maps `path` (owned `Box<[u8]>`) to its rank.
+    rank_of: FxHashMap<Box<[u8]>, u64>,
+}
+
+impl<const W: usize> EnumeratedSaw<W> {
+    /// Build by enumerating every SAW of length 0..=`max_length` on the W×W
+    /// grid in canonical (length, start, ascending-cell-index) order. This is
+    /// memory-heavy — use `Saw::new` (navigation-based) for combos that don't
+    /// fit.
+    pub fn new(max_length: usize) -> Self {
+        assert!(
+            W > 0 && W <= 11,
+            "EnumeratedSaw<W> requires 1 ≤ W ≤ 11 (visited mask fits in u128)"
+        );
+        let mut arena: Vec<u8> = Vec::new();
+        let mut offsets: Vec<u32> = vec![0];
+
+        let n = n_cells::<W>();
+        for length in 0..=max_length {
+            for start in 0..n {
+                Self::enumerate_from(start as u8, length, &mut arena, &mut offsets);
+            }
+        }
+
+        let mut rank_of: FxHashMap<Box<[u8]>, u64> = FxHashMap::default();
+        rank_of.reserve(offsets.len() - 1);
+        for i in 0..(offsets.len() - 1) {
+            let path = &arena[offsets[i] as usize..offsets[i + 1] as usize];
+            rank_of.insert(path.to_vec().into_boxed_slice(), i as u64);
+        }
+
+        EnumeratedSaw {
+            arena,
+            offsets,
+            rank_of,
+        }
+    }
+
+    fn enumerate_from(start: u8, length: usize, arena: &mut Vec<u8>, offsets: &mut Vec<u32>) {
+        let mut path = vec![start];
+        let visited: u128 = 1u128 << start;
+        Self::dfs(start, visited, length, &mut path, arena, offsets);
+    }
+
+    fn dfs(
+        pos: u8,
+        visited: u128,
+        remaining: usize,
+        path: &mut Vec<u8>,
+        arena: &mut Vec<u8>,
+        offsets: &mut Vec<u32>,
+    ) {
+        if remaining == 0 {
+            arena.extend_from_slice(path);
+            offsets.push(arena.len() as u32);
+            return;
+        }
+        for next in neighbors::<W>(pos) {
+            if (visited >> next) & 1 != 0 {
+                continue;
+            }
+            path.push(next);
+            Self::dfs(
+                next,
+                visited | (1u128 << next),
+                remaining - 1,
+                path,
+                arena,
+                offsets,
+            );
+            path.pop();
+        }
+    }
+
+    pub fn total(&self) -> u64 {
+        (self.offsets.len() - 1) as u64
+    }
+
+    pub fn decode(&self, rank: u64) -> &[u8] {
+        let i = rank as usize;
+        &self.arena[self.offsets[i] as usize..self.offsets[i + 1] as usize]
+    }
+
+    pub fn encode(&self, path: &[u8]) -> u64 {
+        *self
+            .rank_of
+            .get(path)
+            .unwrap_or_else(|| panic!("encode: path not in table"))
+    }
+
+    pub fn memory_bytes(&self) -> usize {
+        // Arena bytes + offsets + HashMap (rough — counts entry struct + path key allocation).
+        self.arena.len()
+            + self.offsets.len() * std::mem::size_of::<u32>()
+            + self.rank_of.len() * (std::mem::size_of::<(Box<[u8]>, u64)>() + 16)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +429,138 @@ mod tests {
     }
 
     // --- Scale exploration: characterize where the library starts hurting ---
+
+    // --- EnumeratedSaw tests ---
+
+    #[test]
+    fn enumerated_agrees_with_navigation_3x3() {
+        // Decode of EnumeratedSaw and Saw must produce the same path at every rank.
+        let saw = Saw::<3>::new(8);
+        let enum_saw = EnumeratedSaw::<3>::new(8);
+        assert_eq!(saw.total(), enum_saw.total());
+        for rank in 0..saw.total() {
+            let nav = saw.decode(rank);
+            let enm = enum_saw.decode(rank).to_vec();
+            assert_eq!(
+                nav, enm,
+                "decode mismatch at rank {rank}: nav={nav:?} enum={enm:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn enumerated_round_trip_4x4() {
+        let enum_saw = EnumeratedSaw::<4>::new(6);
+        for rank in 0..enum_saw.total() {
+            let path = enum_saw.decode(rank).to_vec();
+            assert_eq!(enum_saw.encode(&path), rank);
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn compare_enumerated_vs_navigation_timing_4x4_L8() {
+        use std::time::Instant;
+        let saw = Saw::<4>::new(8);
+        let enum_saw = EnumeratedSaw::<4>::new(8);
+        let total = saw.total();
+        eprintln!(
+            "\n4×4 L=8: total={total}, enum memory ≈ {} KB",
+            enum_saw.memory_bytes() / 1024
+        );
+
+        // Spot-check 5000 ranks each way.
+        let step = (total / 5000).max(1);
+        let mut sampled = 0u64;
+
+        // Navigation-based.
+        let t = Instant::now();
+        let mut rank = 0;
+        while rank < total {
+            let path = saw.decode(rank);
+            let _re = saw.encode(&path);
+            sampled += 1;
+            rank += step;
+        }
+        let nav_ms = t.elapsed().as_micros();
+
+        // Enumerated.
+        let t = Instant::now();
+        let mut rank = 0;
+        let mut sampled_e = 0u64;
+        while rank < total {
+            let path = enum_saw.decode(rank);
+            let _re = enum_saw.encode(path);
+            sampled_e += 1;
+            rank += step;
+        }
+        let enum_us = t.elapsed().as_micros();
+        eprintln!(
+            "Nav-based:  {} round-trips in {} µs ({:.2} µs each)",
+            sampled,
+            nav_ms,
+            nav_ms as f64 / sampled as f64
+        );
+        eprintln!(
+            "Enumerated: {} round-trips in {} µs ({:.3} µs each)",
+            sampled_e,
+            enum_us,
+            enum_us as f64 / sampled_e as f64
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn compare_enumerated_vs_navigation_timing_5x5_L10() {
+        use std::time::Instant;
+        let saw = Saw::<5>::new(10);
+        eprintln!("\nbuilding EnumeratedSaw<5> L=10...");
+        let t = Instant::now();
+        let enum_saw = EnumeratedSaw::<5>::new(10);
+        let enum_build_ms = t.elapsed().as_millis();
+        let total = saw.total();
+        eprintln!(
+            "5×5 L=10: total={total}, build={enum_build_ms} ms, memory ≈ {} KB",
+            enum_saw.memory_bytes() / 1024
+        );
+
+        // Spot-check 1000 ranks each way.
+        let step = (total / 1000).max(1);
+
+        let t = Instant::now();
+        let mut sampled = 0u64;
+        let mut rank = 0;
+        while rank < total {
+            let path = saw.decode(rank);
+            let _re = saw.encode(&path);
+            sampled += 1;
+            rank += step;
+        }
+        let nav_us = t.elapsed().as_micros();
+
+        let t = Instant::now();
+        let mut sampled_e = 0u64;
+        let mut rank = 0;
+        while rank < total {
+            let path = enum_saw.decode(rank);
+            let _re = enum_saw.encode(path);
+            sampled_e += 1;
+            rank += step;
+        }
+        let enum_us = t.elapsed().as_micros();
+        eprintln!(
+            "Nav-based:  {} round-trips in {} µs ({:.2} µs each)",
+            sampled,
+            nav_us,
+            nav_us as f64 / sampled as f64
+        );
+        eprintln!(
+            "Enumerated: {} round-trips in {} µs ({:.3} µs each)",
+            sampled_e,
+            enum_us,
+            enum_us as f64 / sampled_e as f64
+        );
+    }
 
     #[test]
     #[ignore]
