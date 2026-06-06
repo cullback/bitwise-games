@@ -144,17 +144,45 @@ SIMPATH packs mate values for only the _active frontier vertices_ — at most
 ~10 bytes per state for an 8×8 grid — using a custom queue in `mem[]`.
 Without that compression, the forward enumeration doesn't fit in memory.
 
-### Phase Z2-bis — Replace mate with compact frontier-only state
+### Phase Z2-bis ⚠ — Frontier-only state isn't enough
 
-Before construction can succeed we need:
+Implemented active-vertex tracking via `first_touch`/`last_touch` and a
+compact `Box<[u8]>` mate-only-for-active-vertices encoding. The
+per-state byte count dropped from 65 → ~16 around layer 16, but **the
+state count is what's killing us, not the per-state size**: at layer 16
+the forward enumeration already has 9K distinct states, and the growth
+trajectory extrapolates to millions by layer 50. With 176 layers each
+holding 10K-1M states + memo overhead, we OOM before reaching the
+dummy-edge phase.
 
-1. A frontier tracker: which vertices are active at each edge layer.
-2. A compact state representation: only `mate[v]` values for active
-   vertices, packed.
-3. Streaming construction so each layer's state map can be discarded after
-   the next layer is built.
+**Root cause is canonicalization**, not storage. The slot-based DP in
+`saw_dp.rs` deliberately relabels arc ids in left-to-right first-seen
+order so that structurally-identical configurations with different
+internal id assignments collide into one canonical state. The mate
+representation uses _absolute vertex ids_, so two configurations with
+the same topology but different vertex labels are distinct states and
+never merge — the state space blows up.
 
-This is the missing piece. It's about ~200 lines on its own.
+For our problem, switching to a slot-based + canonicalized representation
+on top of the edge-by-edge ZDD framework is the only realistic path.
+That means refactoring our cell-based slot DP into per-edge transitions
+(splitting each cell's 4-way decision into two binary edge decisions
+with a "mid-cell" partial state). That's another ~200 lines of careful
+work, plus the partial-state semantics need to be correct or the ZDD
+encodes the wrong family.
+
+### Phase Z2-ter — Slot-based per-edge ZDD construction (not yet started)
+
+The right next direction. Split:
+
+1. Define a "mid-cell" Frontier extension: same fields as `saw_dp::Frontier`
+   plus a flag for "right edge of cell (r, c) decided but down not yet."
+2. Two transition functions: `apply_right_edge`, `apply_down_edge`. Each
+   takes a slot Frontier and produces 0/1 successor frontiers depending on
+   the include/skip decision.
+3. Build ZDD edge-by-edge using canonical packed-u64 keys (same packing as
+   `saw_dp.rs`).
+4. Verify against `saw_dp::count_saws` at every length.
 
 ### Phase Z3 — Reduction
 

@@ -256,6 +256,131 @@ fn prune_frontier(mate: &Mate, edge_idx: usize, lt: &[usize; N_VERTS]) -> Option
     Some(*mate)
 }
 
+// --- Compact frontier-only state (Phase Z2-bis) ---
+//
+// For each edge layer i, the "active frontier" is the set of vertices whose
+// first incident edge has been processed but whose last edge has not. Only
+// those vertices have non-trivial mate values; all others are either
+// untouched (`mate[v] = v`) or saturated-and-departed (`mate[v] = 0`,
+// permanently). So we store mate only for active vertices.
+//
+// The active-vertex *set* at each layer is fixed (determined by the edge
+// order); only the mate *values* vary across reachable states. That makes
+// the state hashable as a small `Box<[u8]>` of length = |active set at
+// layer i|, and the state space at each layer becomes tractable.
+
+fn first_touch(edges: &[(u8, u8, EdgeKind)]) -> [usize; N_VERTS] {
+    let mut ft = [usize::MAX; N_VERTS];
+    for (i, &(j, k, _)) in edges.iter().enumerate() {
+        if ft[j as usize] == usize::MAX {
+            ft[j as usize] = i;
+        }
+        if ft[k as usize] == usize::MAX {
+            ft[k as usize] = i;
+        }
+    }
+    ft
+}
+
+/// Active vertex set *before* processing edge `i`. A vertex is active if its
+/// first incident edge has been processed (index < i) and its last has not
+/// (index ≥ i).
+fn compute_active_sets(edges: &[(u8, u8, EdgeKind)]) -> Vec<Vec<u8>> {
+    let ft = first_touch(edges);
+    let lt = last_touch(edges);
+    let mut sets: Vec<Vec<u8>> = vec![Vec::new(); edges.len() + 1];
+    for v in 0..N_VERTS {
+        if ft[v] == usize::MAX {
+            continue; // never touched (shouldn't happen for connected graph)
+        }
+        for i in (ft[v] + 1)..=lt[v] {
+            sets[i].push(v as u8);
+        }
+    }
+    for s in sets.iter_mut() {
+        s.sort_unstable();
+    }
+    sets
+}
+
+/// Compact state: `mate[v]` values for the active vertices at this layer, in
+/// the order returned by `compute_active_sets[i]`.
+type CompactState = Box<[u8]>;
+
+fn unpack_compact(state: &CompactState, active: &[u8]) -> Mate {
+    let mut m = [0u8; N_VERTS];
+    for (v, slot) in m.iter_mut().enumerate() {
+        *slot = v as u8;
+    }
+    for (i, &v) in active.iter().enumerate() {
+        m[v as usize] = state[i];
+    }
+    m
+}
+
+fn pack_compact(mate: &Mate, active: &[u8]) -> CompactState {
+    active
+        .iter()
+        .map(|&v| mate[v as usize])
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
+}
+
+fn initial_compact(source: u8, active0: &[u8]) -> CompactState {
+    // At layer 0 the only "active" vertices are those introduced by edge 0.
+    // The source is pre-paired with DUMMY before any edge is processed, but
+    // DUMMY isn't touched until the dummy edges start (index ~112), so it's
+    // not in active0. We model the pre-pairing by hoisting the source's mate
+    // even if source isn't yet active. Simpler: use full mate at layer 0 and
+    // pack into compact only for storage.
+    let full = initial_mate(source);
+    pack_compact(&full, active0)
+}
+
+/// Apply the skip / include transition between compact states across one
+/// edge boundary. Returns None for the include branch if invalid (saturated
+/// vertex involvement, or a cycle that doesn't satisfy the simple-cycle
+/// condition).
+fn transition_compact(
+    state: &CompactState,
+    active_in: &[u8],
+    active_out: &[u8],
+    edge_idx: usize,
+    j: u8,
+    k: u8,
+    lt: &[usize; N_VERTS],
+    source: u8,
+    include: bool,
+) -> Option<CompactState> {
+    // 1. Reconstruct full mate from compact + initial fill-ins.
+    let mut full = unpack_compact(state, active_in);
+    // Restore the source-dummy pre-pairing if neither is in active_in
+    // (i.e., we're before any edge incident to either). Otherwise the state
+    // already carries the latest mate for them.
+    if !active_in.contains(&source) && !active_in.contains(&DUMMY) {
+        full[source as usize] = DUMMY;
+        full[DUMMY as usize] = source;
+    }
+
+    // 2. Apply edge processing.
+    if include {
+        full = try_include_edge(&full, j, k)?;
+    }
+
+    // 3. Prune any vertex that just left the frontier with a dangling mate.
+    for v in 0..N_VERTS {
+        if lt[v] == edge_idx {
+            let m = full[v];
+            if m != 0 && m != v as u8 {
+                return None;
+            }
+        }
+    }
+
+    // 4. Re-pack into compact state at the new active set.
+    Some(pack_compact(&full, active_out))
+}
+
 /// Build the SAW ZDD for paths starting at `source`. Includes paths of all
 /// lengths (filtered later via per-length counts in Phase Z3).
 ///
@@ -263,75 +388,78 @@ fn prune_frontier(mate: &Mate, edge_idx: usize, lt: &[usize; N_VERTS]) -> Option
 pub fn build_saw_zdd(source: u8) -> Zdd {
     let edges = build_edge_list();
     let lt = last_touch(&edges);
+    let active_sets = compute_active_sets(&edges);
     let n_edges = edges.len();
 
-    // --- Phase A: forward enumeration of reachable mate states per layer.
-    let mut layers: Vec<FxHashMap<Mate, ()>> = vec![FxHashMap::default(); n_edges + 1];
-    layers[0].insert(initial_mate(source), ());
+    // --- Phase A: forward enumeration of reachable compact states per layer.
+    let mut layers: Vec<FxHashMap<CompactState, ()>> =
+        (0..=n_edges).map(|_| FxHashMap::default()).collect();
+    layers[0].insert(initial_compact(source, &active_sets[0]), ());
 
     for (i, &(j, k, _)) in edges.iter().enumerate() {
         if i % 16 == 0 {
             eprintln!(
-                "  forward enum edge {i}/{n_edges}, layer states: {}",
-                layers[i].len()
+                "  forward edge {i}/{n_edges}, layer states: {} (active={})",
+                layers[i].len(),
+                active_sets[i].len(),
             );
         }
-        // Snapshot to avoid mutating during iteration.
-        let states: Vec<Mate> = layers[i].keys().copied().collect();
+        let states: Vec<CompactState> = layers[i].keys().cloned().collect();
         for state in states {
-            // Skip branch.
-            if let Some(next) = prune_frontier(&state, i, &lt) {
+            let active_in = &active_sets[i];
+            let active_out = &active_sets[i + 1];
+            if let Some(next) =
+                transition_compact(&state, active_in, active_out, i, j, k, &lt, source, false)
+            {
                 layers[i + 1].insert(next, ());
             }
-            // Include branch.
-            if let Some(after_include) = try_include_edge(&state, j, k) {
-                if let Some(next) = prune_frontier(&after_include, i, &lt) {
-                    layers[i + 1].insert(next, ());
-                }
+            if let Some(next) =
+                transition_compact(&state, active_in, active_out, i, j, k, &lt, source, true)
+            {
+                layers[i + 1].insert(next, ());
             }
         }
     }
 
     // --- Phase B: bottom-up ZDD node construction.
     let mut builder = ZddBuilder::new();
-    // node_id[layer][state] = NodeId
-    let mut node_id: Vec<FxHashMap<Mate, NodeId>> = vec![FxHashMap::default(); n_edges + 1];
+    let mut node_id: Vec<FxHashMap<CompactState, NodeId>> =
+        (0..=n_edges).map(|_| FxHashMap::default()).collect();
 
-    // Terminal layer: HI if mate is fully settled (every vertex saturated or
-    // untouched), else LO.
+    // Terminal layer: the active set should be empty (all vertices have left
+    // the frontier). HI if mate values were all properly settled (we never
+    // reached an invalid compact state in Phase A pruning); else LO.
     for state in layers[n_edges].keys() {
-        let mut ok = true;
-        for (v, &m) in state.iter().enumerate() {
-            if m != 0 && m != v as u8 {
-                ok = false;
-                break;
-            }
-        }
-        node_id[n_edges].insert(*state, if ok { HI } else { LO });
+        // active_sets[n_edges] should be empty — assert.
+        node_id[n_edges].insert(state.clone(), HI);
     }
 
-    // Build upward.
     for i in (0..n_edges).rev() {
         let (j, k, _) = edges[i];
-        let states: Vec<Mate> = layers[i].keys().copied().collect();
+        let states: Vec<CompactState> = layers[i].keys().cloned().collect();
         for state in states {
-            let lo_id = match prune_frontier(&state, i, &lt) {
+            let active_in = &active_sets[i];
+            let active_out = &active_sets[i + 1];
+            let lo_id = match transition_compact(
+                &state, active_in, active_out, i, j, k, &lt, source, false,
+            ) {
                 Some(next) => *node_id[i + 1].get(&next).unwrap_or(&LO),
                 None => LO,
             };
-            let hi_id = match try_include_edge(&state, j, k) {
-                Some(after_include) => match prune_frontier(&after_include, i, &lt) {
+            let hi_id =
+                match transition_compact(&state, active_in, active_out, i, j, k, &lt, source, true)
+                {
                     Some(next) => *node_id[i + 1].get(&next).unwrap_or(&LO),
                     None => LO,
-                },
-                None => LO,
-            };
+                };
             let id = builder.make_node(i as u8, lo_id, hi_id);
             node_id[i].insert(state, id);
         }
     }
 
-    let root = *node_id[0].get(&initial_mate(source)).unwrap_or(&LO);
+    let root = *node_id[0]
+        .get(&initial_compact(source, &active_sets[0]))
+        .unwrap_or(&LO);
     builder.into_zdd(root)
 }
 
