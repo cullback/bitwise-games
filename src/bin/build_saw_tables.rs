@@ -851,7 +851,7 @@ mod tests {
 /// transitions are implemented correctly, this should pass clean.
 fn validate_dp_against_naive() {
     let dp = Dp::new();
-    let max_l = 8;
+    let max_l = 12;
     let mut total = 0usize;
     let mut failures = Vec::new();
     let mut per_l_total = vec![0usize; max_l + 1];

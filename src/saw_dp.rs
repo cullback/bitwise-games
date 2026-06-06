@@ -262,6 +262,59 @@ fn merge_strands(state: &mut Frontier, a: Slot, b: Slot, c: usize) -> Option<boo
     }
 }
 
+// --- Packing ---
+//
+// Canonical Frontier + edge-count packs into a u64 key:
+//   bits  0..32  — slots[0..8], 4 bits each
+//   bits 32..36  — h slot, 4 bits
+//   bits 36..40  — closed counter, 4 bits (only ever 0 or 1 in practice)
+//   bits 40..48  — edges so far, 8 bits (sufficient for any L up to 255)
+//
+// Slot encoding: Empty=0, Free=1, Arc(id)=2+id. After canonicalization,
+// id ∈ 0..=3 since at most 4 arc pairs fit in 8 slots; values 2..=5.
+
+#[inline(always)]
+fn pack_slot(s: Slot) -> u64 {
+    match s {
+        Slot::Empty => 0,
+        Slot::Free => 1,
+        Slot::Arc(id) => 2 + id as u64,
+    }
+}
+
+#[inline(always)]
+fn unpack_slot(b: u64) -> Slot {
+    match b & 0xf {
+        0 => Slot::Empty,
+        1 => Slot::Free,
+        x => Slot::Arc((x - 2) as u8),
+    }
+}
+
+#[inline(always)]
+fn pack(state: &Frontier, edges: usize) -> u64 {
+    let mut v = 0u64;
+    for (i, s) in state.slots.iter().enumerate() {
+        v |= pack_slot(*s) << (i * 4);
+    }
+    v |= pack_slot(state.h) << 32;
+    v |= (state.closed as u64) << 36;
+    v |= (edges as u64) << 40;
+    v
+}
+
+#[inline(always)]
+fn unpack(v: u64) -> (Frontier, usize) {
+    let mut slots = [Slot::Empty; GRID_W];
+    for i in 0..GRID_W {
+        slots[i] = unpack_slot(v >> (i * 4));
+    }
+    let h = unpack_slot(v >> 32);
+    let closed = ((v >> 36) & 0xf) as u8;
+    let edges = ((v >> 40) & 0xff) as usize;
+    (Frontier { slots, h, closed }, edges)
+}
+
 /// Count length-`target_length` SAWs starting at `start_cell` on the 8×8 grid,
 /// with cells in `forbidden` excluded from the path. `start_cell` should not
 /// itself be set in `forbidden`.
@@ -277,9 +330,10 @@ pub fn count_saws(start_cell: u8, target_length: usize, forbidden: u64) -> u64 {
     let start_r = (start_cell / 8) as usize;
     let start_c = (start_cell % 8) as usize;
 
-    use std::collections::HashMap;
-    let mut dp: HashMap<(Frontier, usize), u64> = HashMap::new();
-    dp.insert((Frontier::empty(), 0), 1);
+    use rustc_hash::FxHashMap;
+    // Key packs (canonical frontier, edges so far) into a single u64.
+    let mut dp: FxHashMap<u64, u64> = FxHashMap::default();
+    dp.insert(pack(&Frontier::empty(), 0), 1);
 
     let mut next_arc_id: u8 = 0;
 
@@ -287,12 +341,13 @@ pub fn count_saws(start_cell: u8, target_length: usize, forbidden: u64) -> u64 {
         for c in 0..GRID_W {
             let is_start = r == start_r && c == start_c;
             let is_forbidden = (forbidden >> (r * 8 + c)) & 1 != 0;
-            let mut next: HashMap<(Frontier, usize), u64> = HashMap::new();
+            let mut next: FxHashMap<u64, u64> = FxHashMap::default();
 
             let right_ok = c < GRID_W - 1;
             let down_ok = r < GRID_H - 1;
 
-            for ((state, edges), &count) in &dp {
+            for (&key, &count) in &dp {
+                let (state, edges) = unpack(key);
                 for right in [false, true] {
                     if right && !right_ok {
                         continue;
@@ -307,7 +362,7 @@ pub fn count_saws(start_cell: u8, target_length: usize, forbidden: u64) -> u64 {
                         }
                         let mut local_arc = next_arc_id;
                         if let Some(new_state) = transition(
-                            state,
+                            &state,
                             c,
                             is_start,
                             is_forbidden,
@@ -316,7 +371,8 @@ pub fn count_saws(start_cell: u8, target_length: usize, forbidden: u64) -> u64 {
                             &mut local_arc,
                         ) {
                             let canonical = new_state.canonical();
-                            *next.entry((canonical, new_edges)).or_insert(0) += count;
+                            let new_key = pack(&canonical, new_edges);
+                            *next.entry(new_key).or_insert(0) += count;
                             if local_arc > next_arc_id {
                                 next_arc_id = local_arc;
                             }
@@ -330,8 +386,9 @@ pub fn count_saws(start_cell: u8, target_length: usize, forbidden: u64) -> u64 {
     }
 
     let mut total = 0u64;
-    for ((state, edges), count) in &dp {
-        if *edges != target_length {
+    for (&key, &count) in &dp {
+        let (state, edges) = unpack(key);
+        if edges != target_length {
             continue;
         }
         if state.open_count() != 0 {

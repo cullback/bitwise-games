@@ -68,7 +68,7 @@ const BANNER_SCALE: u32 = 2;
 
 // Maximum body length (cells beyond head). Snake total length = MAX_LEN + 1.
 // Capped low because count_extensions is naive — see top of file.
-const MAX_LEN: usize = 15;
+const MAX_LEN: usize = 22;
 
 // --- Directions (absolute) ---
 
