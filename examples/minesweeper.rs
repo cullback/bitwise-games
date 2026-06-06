@@ -10,23 +10,46 @@ Minesweeper on a 7×7 grid (49 cells, 8 mines).
 
 # Maximize
 
-Mine count and puzzle richness within the 64-bit budget. Each
-interactive cell costs log₂(3) ≈ 1.585 bits as a base-3 digit, so 35
-cells = 56 bits (3^35 ≈ 5.0e16 < 2^56 ≈ 7.2e16) and 8 bits left for
-the seed (256 unique boards). 35 interactive cells comfortably hold 8
-mines on a 7×7 — 16.3% density, between easy (12–15%) and intermediate
-(~18%). Pushing to 36 cells would need 58 bits and force the seed below
-64 boards.
+Mines and numbered cells carry different per-cell entropy. Mines only
+toggle between HIDDEN and FLAGGED (1 bit); numbered cells need
+HIDDEN/REVEALED/FLAGGED (log₂(3) ≈ 1.585 bits). Death is encoded as a
+*sentinel* in the numbered-cell value: any packed value ≥ 3^N_NUMBERED
+means "dead." That uses the slack between 3^N_NUMBERED and the next
+power of two — no explicit dead bit, freeing one numbered cell over
+the equivalent dead-bit layout.
+
+Budget with 8 mines and 8 seed bits:
+
+  64 − 8 (seed) − 8 (mine bits) = 48 bits for numbered + sentinel
+
+3^30 + 1 ≈ 2.06e14 < 2^48 ≈ 2.81e14, so 30 numbered cells fit (vs. 29
+with an explicit dead bit). Total: 8 mines + 30 numbered = 38
+interactive cells. Mine density on 7×7: 16.3%, between beginner
+(12–15%) and intermediate (~18%).
+
+Death rendering: the sentinel collapses the numbered snapshot, but the
+death screen reveals the entire board anyway — every mine, every
+numbered count, every zero cell. Wrong flags simply appear as the
+numbers they should have been. Nothing of value is lost from the
+collapse.
+
+`N_NUMBERED` is derived from `N_MINES` via `max_numbered`. Each extra
+mine costs only 1 bit (vs. 1.585 for a numbered cell), so denser-mine
+boards fit more interactive cells — the limit becomes board geometry,
+not the encoding.
 
 # Encoding
 
-| Start | Length | Description                                |
-|-------|--------|--------------------------------------------|
-|     0 |      8 | board seed (256 unique boards)             |
-|     8 |     56 | 35 tri-state cells, base-3 fixed length 35 |
+| Start | Length | Description                                  |
+|-------|--------|----------------------------------------------|
+|     0 |      8 | board seed (256 unique boards)               |
+|     8 |      8 | mine flag bits (1 = FLAGGED, 0 = HIDDEN)     |
+|    16 |    ~48 | numbered packed: < 3^N alive, ≥ 3^N is dead  |
 
-Cell digits: 0 = HIDDEN, 1 = REVEALED, 2 = FLAGGED. The i-th digit is
-the tri-state of the i-th interactive cell in row-major order.
+Cell layout: `cells[0..N_MINES]` hold mines in row-major grid order
+(values 0 = HIDDEN, 2 = FLAGGED — REVEALED is never set on a mine).
+`cells[N_MINES..N_INTERACTIVE]` hold numbered cells in row-major grid
+order (values 0/1/2 = HIDDEN/REVEALED/FLAGGED).
 
 # Notes
 
@@ -46,11 +69,11 @@ cell of a region one-by-one will "auto-reveal" the region on the last
 click. Rare and arguably correct.
 
 **Board regeneration per tick.** `update` reconstructs the board from
-the seed every tick — the seed alone doesn't pin it down, so we pick 8
-mines via `rng::next` and reject any placement that doesn't yield
-exactly 35 interactive cells. At 16.3% density the expected interactive
-count sits just above 35 with modest variance, so the rejection
-generator converges in a handful of attempts per tick.
+the seed every tick — the seed alone doesn't pin it down, so we pick
+`N_MINES` mines via `rng::next` and reject any placement that doesn't
+yield exactly `N_NUMBERED` numbered cells. At 16.3% density the
+expected numbered count sits near our target with modest variance, so
+the rejection generator converges in a handful of attempts per tick.
 
 **Win = correct flags.** Win is "every mine flagged AND no non-mine
 flagged", not "every numbered cell revealed" — players have to actively
@@ -70,12 +93,42 @@ const ROWS: usize = 7;
 const COLS: usize = 7;
 const N_CELLS: usize = ROWS * COLS; // 49
 const N_MINES: usize = 8;
-const N_INTERACTIVE: usize = 35;
 
 const SEED_BITS: u32 = 8;
 const SEED_MASK: u64 = (1u64 << SEED_BITS) - 1;
 
-// Tri-state values (base-3 digit per cell).
+/// Largest K such that (3^K + 1) · 2^(mines + seed_bits) ≤ 2^64. The +1
+/// reserves a single sentinel state to mark "dead" — no explicit dead bit.
+const fn max_numbered(mines: u32, seed_bits: u32) -> usize {
+    let bits_left = 64 - seed_bits - mines;
+    let bound: u128 = 1u128 << bits_left;
+    let mut k: usize = 0;
+    let mut p: u128 = 1;
+    while p * 3 + 1 <= bound {
+        p *= 3;
+        k += 1;
+    }
+    k
+}
+
+const N_NUMBERED: usize = max_numbered(N_MINES as u32, SEED_BITS);
+const N_INTERACTIVE: usize = N_MINES + N_NUMBERED;
+
+const fn pow3(n: usize) -> u64 {
+    let mut p: u64 = 1;
+    let mut i = 0;
+    while i < n {
+        p *= 3;
+        i += 1;
+    }
+    p
+}
+
+/// Death sentinel — any numbered_part value ≥ this means "dead."
+const DEAD_SENTINEL: u64 = pow3(N_NUMBERED);
+
+// State values. Mines use only HIDDEN and FLAGGED (REVEALED is unused); on
+// the wire each mine collapses to a single bit (FLAGGED → 1, HIDDEN → 0).
 const HIDDEN: u8 = 0;
 const REVEALED: u8 = 1;
 const FLAGGED: u8 = 2;
@@ -115,6 +168,7 @@ const MAX_GEN_ATTEMPTS: u32 = 1000;
 
 struct State {
     seed: u16,
+    dead: bool,
     cells: [u8; N_INTERACTIVE],
 }
 
@@ -122,19 +176,37 @@ fn decode(state: u64) -> State {
     let seed = (state & SEED_MASK) as u16;
     let mut v = state >> SEED_BITS;
     let mut cells = [0u8; N_INTERACTIVE];
-    for cell in cells.iter_mut() {
-        *cell = (v % 3) as u8;
-        v /= 3;
+    for cell in cells.iter_mut().take(N_MINES) {
+        *cell = if (v & 1) != 0 { FLAGGED } else { HIDDEN };
+        v >>= 1;
     }
-    State { seed, cells }
+    // Sentinel: numbered_part ≥ 3^N_NUMBERED → dead, cells stay HIDDEN.
+    let dead = v >= DEAD_SENTINEL;
+    if !dead {
+        for cell in cells.iter_mut().skip(N_MINES) {
+            *cell = (v % 3) as u8;
+            v /= 3;
+        }
+    }
+    State { seed, dead, cells }
 }
 
 fn encode(state: &State) -> u64 {
-    let mut packed = 0u64;
-    for i in (0..N_INTERACTIVE).rev() {
-        packed = packed * 3 + state.cells[i] as u64;
+    // High end first: pack numbered cells in base-3, or the dead sentinel.
+    let mut v = if state.dead {
+        DEAD_SENTINEL
+    } else {
+        let mut packed = 0u64;
+        for i in (0..N_NUMBERED).rev() {
+            packed = packed * 3 + state.cells[N_MINES + i] as u64;
+        }
+        packed
+    };
+    // Then mine flags as one bit each (FLAGGED → 1, HIDDEN → 0).
+    for i in (0..N_MINES).rev() {
+        v = (v << 1) | (state.cells[i] == FLAGGED) as u64;
     }
-    (packed << SEED_BITS) | (state.seed as u64 & SEED_MASK)
+    (v << SEED_BITS) | (state.seed as u64 & SEED_MASK)
 }
 
 // --- Board (regenerated per tick from seed) ---
@@ -215,19 +287,26 @@ fn try_build_board(mines: &[u8; N_MINES]) -> Option<Board> {
         }
     }
 
-    // Interactive = mines + numbered, in row-major order.
+    // Cell index layout: mines occupy 0..N_MINES, numbered occupy
+    // N_MINES..N_INTERACTIVE — each kind in row-major grid order. The
+    // encoding relies on this split to pack mines as bits and numbered as
+    // base-3 digits without consulting the board.
     let mut cell_to_idx = [255u8; N_CELLS];
-    let mut n_interactive = 0usize;
+    let mut n_mines_seen = 0usize;
+    let mut n_numbered = 0usize;
     for cell in 0..N_CELLS as u8 {
-        if is_mine[cell as usize] || counts[cell as usize] > 0 {
-            if n_interactive >= N_INTERACTIVE {
+        if is_mine[cell as usize] {
+            cell_to_idx[cell as usize] = n_mines_seen as u8;
+            n_mines_seen += 1;
+        } else if counts[cell as usize] > 0 {
+            if n_numbered >= N_NUMBERED {
                 return None;
             }
-            cell_to_idx[cell as usize] = n_interactive as u8;
-            n_interactive += 1;
+            cell_to_idx[cell as usize] = (N_MINES + n_numbered) as u8;
+            n_numbered += 1;
         }
     }
-    if n_interactive != N_INTERACTIVE {
+    if n_numbered != N_NUMBERED {
         return None;
     }
 
@@ -323,11 +402,15 @@ fn build_board_lossy(seed: u16) -> Board {
         }
     }
     let mut cell_to_idx = [255u8; N_CELLS];
-    let mut n_interactive = 0usize;
+    let mut n_mines_seen = 0usize;
+    let mut n_numbered = 0usize;
     for cell in 0..N_CELLS as u8 {
-        if (is_mine[cell as usize] || counts[cell as usize] > 0) && n_interactive < N_INTERACTIVE {
-            cell_to_idx[cell as usize] = n_interactive as u8;
-            n_interactive += 1;
+        if is_mine[cell as usize] && n_mines_seen < N_MINES {
+            cell_to_idx[cell as usize] = n_mines_seen as u8;
+            n_mines_seen += 1;
+        } else if !is_mine[cell as usize] && counts[cell as usize] > 0 && n_numbered < N_NUMBERED {
+            cell_to_idx[cell as usize] = (N_MINES + n_numbered) as u8;
+            n_numbered += 1;
         }
     }
     Board {
@@ -348,14 +431,8 @@ fn region_revealed(state: &State, board: &Board, region_idx: usize) -> bool {
         .all(|&idx| state.cells[idx as usize] == REVEALED)
 }
 
-fn is_dead(state: &State, board: &Board) -> bool {
-    (0..N_CELLS as u8).any(|cell| {
-        if !board.is_mine[cell as usize] {
-            return false;
-        }
-        let idx = board.cell_to_idx[cell as usize];
-        idx != 255 && state.cells[idx as usize] == REVEALED
-    })
+fn is_dead(state: &State, _board: &Board) -> bool {
+    state.dead
 }
 
 fn is_won(state: &State, board: &Board) -> bool {
@@ -398,10 +475,8 @@ fn hovered_cell(mouse: Option<(u8, u8)>) -> Option<u8> {
 
 fn apply_reveal(state: &mut State, board: &Board, cell: u8) {
     if board.is_mine[cell as usize] {
-        let idx = board.cell_to_idx[cell as usize];
-        if idx != 255 {
-            state.cells[idx as usize] = REVEALED;
-        }
+        // Mines have no REVEALED state — death is a single global bit.
+        state.dead = true;
         return;
     }
     if board.counts[cell as usize] > 0 {
@@ -429,11 +504,14 @@ fn apply_flag(state: &mut State, board: &Board, cell: u8) {
     if idx == 255 {
         return;
     }
+    // Mines only toggle HIDDEN↔FLAGGED; numbered cells additionally have a
+    // REVEALED state that flag must not overwrite. Both branches end up the
+    // same since REVEALED never appears on a mine.
     let v = &mut state.cells[idx as usize];
     *v = match *v {
         HIDDEN => FLAGGED,
         FLAGGED => HIDDEN,
-        _ => *v, // revealed: no-op
+        _ => *v, // revealed numbered: no-op
     };
 }
 
@@ -733,16 +811,19 @@ fn render(state: &State, board: &Board, hover: Option<u8>) -> FrameBuffer {
     // shared borders and a closing border around the grid's outer edge.
     commands.push(DrawCommand::rect(GRID_X, GRID_Y, GRID_PX, GRID_PX, BLACK));
 
-    // First pass: backgrounds (reveal status determines visual).
+    // First pass: backgrounds (reveal status determines visual). On death,
+    // every cell flips to revealed — the full board is shown as game-over.
     for cell in 0..N_CELLS as u8 {
-        let idx = board.cell_to_idx[cell as usize];
-        let revealed = if idx != 255 {
-            // Mine or numbered: revealed status lives directly in the digit.
-            state.cells[idx as usize] == REVEALED
+        let revealed = if dead {
+            true
         } else {
-            // Zero cell: revealed iff its region's border is fully revealed.
-            let region = board.cell_to_region[cell as usize];
-            region != 255 && region_revealed(state, board, region as usize)
+            let idx = board.cell_to_idx[cell as usize];
+            if idx != 255 {
+                state.cells[idx as usize] == REVEALED
+            } else {
+                let region = board.cell_to_region[cell as usize];
+                region != 255 && region_revealed(state, board, region as usize)
+            }
         };
         draw_cell_background(&mut commands, cell, revealed);
     }
@@ -767,43 +848,22 @@ fn render(state: &State, board: &Board, hover: Option<u8>) -> FrameBuffer {
         };
 
         if board.is_mine[cell as usize] {
-            if dead {
-                // All mines revealed on death; the clicked one shows red.
-                let exploded = cell_state == REVEALED;
-                draw_mine(&mut commands, cell, exploded);
-            } else if cell_state == FLAGGED {
-                draw_flag(&mut commands, cell);
+            if dead || cell_state == FLAGGED {
+                // On death every mine shows; otherwise only flagged ones.
+                if dead {
+                    draw_mine(&mut commands, cell, false);
+                } else {
+                    draw_flag(&mut commands, cell);
+                }
             }
-            // Hidden mines stay hidden during play and on win.
         } else if board.counts[cell as usize] > 0 {
-            if cell_state == REVEALED {
+            if dead || cell_state == REVEALED {
                 draw_number(&mut commands, cell, board.counts[cell as usize]);
             } else if cell_state == FLAGGED {
                 draw_flag(&mut commands, cell);
             }
         }
         // Zero cells: no glyph regardless of state.
-    }
-
-    // Wrong-flag indicator on death: flags on non-mine cells get a red X.
-    if dead {
-        for cell in 0..N_CELLS as u8 {
-            if board.is_mine[cell as usize] {
-                continue;
-            }
-            let idx = board.cell_to_idx[cell as usize];
-            if idx != 255 && state.cells[idx as usize] == FLAGGED {
-                let (x, y) = cell_xy(cell);
-                commands.push(DrawCommand::rect(x + 2, y + 2, CELL_PX - 4, 1, RED));
-                commands.push(DrawCommand::rect(
-                    x + 2,
-                    y + CELL_PX - 3,
-                    CELL_PX - 4,
-                    1,
-                    RED,
-                ));
-            }
-        }
     }
 
     // Status strip: mines remaining = N_MINES − flags placed on mines we
@@ -856,6 +916,7 @@ fn draw_counter(commands: &mut Vec<DrawCommand>, remaining: i32) {
 fn fresh_state(seed: u16) -> State {
     State {
         seed: seed & SEED_MASK as u16,
+        dead: false,
         cells: [HIDDEN; N_INTERACTIVE],
     }
 }
@@ -918,31 +979,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn state_round_trips() {
-        for seed in [0u16, 1, 42, 511, 1023] {
+    fn alive_state_round_trips() {
+        // Alive states preserve seed, mine flags, and every numbered cell.
+        for seed in [0u16, 1, 42, 127, 255] {
             let mut s = fresh_state(seed);
-            // Fill every cell with a non-trivial mix of states.
-            for (i, c) in s.cells.iter_mut().enumerate() {
-                *c = (i % 3) as u8;
+            for i in 0..N_MINES {
+                s.cells[i] = if i % 2 == 0 { HIDDEN } else { FLAGGED };
+            }
+            for i in 0..N_NUMBERED {
+                s.cells[N_MINES + i] = (i % 3) as u8;
             }
             let bits = encode(&s);
             let d = decode(bits);
             assert_eq!(d.seed, s.seed);
+            assert!(!d.dead);
             assert_eq!(d.cells, s.cells);
         }
     }
 
     #[test]
+    fn dead_state_round_trips() {
+        // Death sentinel preserves seed, dead flag, and mine flags; numbered
+        // cells collapse to HIDDEN (the snapshot at death is intentionally lossy).
+        for seed in [0u16, 1, 42, 127, 255] {
+            let mut s = fresh_state(seed);
+            s.dead = true;
+            for i in 0..N_MINES {
+                s.cells[i] = if i % 2 == 0 { HIDDEN } else { FLAGGED };
+            }
+            for i in 0..N_NUMBERED {
+                s.cells[N_MINES + i] = (i % 3) as u8;
+            }
+            let bits = encode(&s);
+            let d = decode(bits);
+            assert_eq!(d.seed, s.seed);
+            assert!(d.dead);
+            // Mine flag state survives.
+            for i in 0..N_MINES {
+                assert_eq!(d.cells[i], s.cells[i]);
+            }
+            // Numbered cells reset to HIDDEN on death.
+            for i in 0..N_NUMBERED {
+                assert_eq!(d.cells[N_MINES + i], HIDDEN);
+            }
+        }
+    }
+
+    #[test]
     fn every_seed_finds_a_valid_board() {
-        // Hit-rate sanity: for every 10-bit seed, generation should converge
-        // within MAX_GEN_ATTEMPTS and yield exactly 34 interactive cells.
+        // Hit-rate sanity: every 8-bit seed must converge within
+        // MAX_GEN_ATTEMPTS to a board with N_MINES mines and exactly
+        // N_NUMBERED numbered cells.
         for seed in 0..256u16 {
             let board = generate_board(seed);
-            let interactive = board.cell_to_idx.iter().filter(|&&i| i != 255).count();
-            assert_eq!(
-                interactive, N_INTERACTIVE,
-                "seed {seed} produced {interactive} interactive cells"
-            );
+            let n_mines = board.is_mine.iter().filter(|&&m| m).count();
+            let n_numbered = (0..N_CELLS as u8)
+                .filter(|&c| !board.is_mine[c as usize] && board.counts[c as usize] > 0)
+                .count();
+            assert_eq!(n_mines, N_MINES, "seed {seed}: wrong mine count");
+            assert_eq!(n_numbered, N_NUMBERED, "seed {seed}: wrong numbered count");
         }
     }
 }
