@@ -303,6 +303,49 @@ fn pack(state: &Frontier, edges: usize) -> u64 {
     v
 }
 
+/// Pack `state` into a u64 key while simultaneously canonicalizing Arc ids
+/// (first-appearance order). Combines `Frontier::canonical()` and `pack()`
+/// into a single pass.
+///
+/// Input arc ids can be any u8 (the DP increments `next_arc_id` without
+/// bound between canonicalizations), so we use a linear-search mapping
+/// instead of an id-indexed array.
+#[inline(always)]
+fn canonical_pack(state: &Frontier, edges: usize) -> u64 {
+    let mut mapping: [(u8, u8); 8] = [(0, 0); 8];
+    let mut mapping_len: usize = 0;
+    let mut next_id: u8 = 0;
+    let mut v = 0u64;
+
+    let mut emit =
+        |s: Slot, mapping: &mut [(u8, u8); 8], mapping_len: &mut usize, next_id: &mut u8| -> u64 {
+            match s {
+                Slot::Empty => 0,
+                Slot::Free => 1,
+                Slot::Arc(id) => {
+                    for &(orig, new) in &mapping[..*mapping_len] {
+                        if orig == id {
+                            return 2 + new as u64;
+                        }
+                    }
+                    let new = *next_id;
+                    mapping[*mapping_len] = (id, new);
+                    *mapping_len += 1;
+                    *next_id += 1;
+                    2 + new as u64
+                }
+            }
+        };
+
+    for (i, s) in state.slots.iter().enumerate() {
+        v |= emit(*s, &mut mapping, &mut mapping_len, &mut next_id) << (i * 4);
+    }
+    v |= emit(state.h, &mut mapping, &mut mapping_len, &mut next_id) << 32;
+    v |= (state.closed as u64) << 36;
+    v |= (edges as u64) << 40;
+    v
+}
+
 #[inline(always)]
 fn unpack(v: u64) -> (Frontier, usize) {
     let mut slots = [Slot::Empty; GRID_W];
@@ -370,8 +413,7 @@ pub fn count_saws(start_cell: u8, target_length: usize, forbidden: u64) -> u64 {
                             down,
                             &mut local_arc,
                         ) {
-                            let canonical = new_state.canonical();
-                            let new_key = pack(&canonical, new_edges);
+                            let new_key = canonical_pack(&new_state, new_edges);
                             *next.entry(new_key).or_insert(0) += count;
                             if local_arc > next_arc_id {
                                 next_arc_id = local_arc;
