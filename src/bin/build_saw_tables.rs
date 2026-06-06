@@ -319,7 +319,7 @@ fn transition(
             match (left, up, right, down) {
                 (true, false, false, false) => {
                     // Left edge only: cell terminates the h strand.
-                    let closed_strand = close_strand_endpoint(&mut new_state, state.h);
+                    let closed_strand = close_strand_endpoint(&mut new_state, state.h, None);
                     new_state.h = Slot::Empty;
                     new_state.slots[c] = Slot::Empty;
                     if closed_strand {
@@ -329,7 +329,8 @@ fn transition(
                 }
                 (false, true, false, false) => {
                     // Up edge only: cell terminates the slot[c] strand.
-                    let closed_strand = close_strand_endpoint(&mut new_state, state.slots[c]);
+                    let closed_strand =
+                        close_strand_endpoint(&mut new_state, state.slots[c], Some(c));
                     new_state.h = Slot::Empty;
                     new_state.slots[c] = Slot::Empty;
                     if closed_strand {
@@ -415,19 +416,29 @@ fn transition(
 /// this edge terminates at this cell (the cell becomes the strand's second
 /// endpoint).
 ///
+/// `consumed_slot_idx` is `Some(c)` when we're consuming `slots[c]` (so the
+/// partner Arc must be found *elsewhere*) or `None` when we're consuming `h`.
+///
 /// Returns `true` if this closes a strand (the input was `Free`), `false`
 /// if it just shifts an Arc's other end to `Free`.
-fn close_strand_endpoint(state: &mut Frontier, slot: Slot) -> bool {
+fn close_strand_endpoint(
+    state: &mut Frontier,
+    slot: Slot,
+    consumed_slot_idx: Option<usize>,
+) -> bool {
     match slot {
         Slot::Free => true,
         Slot::Arc(id) => {
-            for s in state.slots.iter_mut() {
-                if matches!(s, Slot::Arc(i) if *i == id) {
+            for (i, s) in state.slots.iter_mut().enumerate() {
+                if Some(i) == consumed_slot_idx {
+                    continue;
+                }
+                if matches!(s, Slot::Arc(j) if *j == id) {
                     *s = Slot::Free;
                     return false;
                 }
             }
-            if matches!(state.h, Slot::Arc(i) if i == id) {
+            if consumed_slot_idx.is_some() && matches!(state.h, Slot::Arc(j) if j == id) {
                 state.h = Slot::Free;
             }
             false
@@ -439,39 +450,37 @@ fn close_strand_endpoint(state: &mut Frontier, slot: Slot) -> bool {
 /// Merge two strands at a cell where both incoming edges (h and slot[c])
 /// terminate. Returns Some(closed_strand) where `closed_strand` is true iff
 /// the merge closes a path (two Frees meeting). Returns None for cycles.
-fn merge_strands(state: &mut Frontier, a: Slot, b: Slot, _c: usize) -> Option<bool> {
+///
+/// `c` is the column being consumed (along with `h`). When searching for
+/// arc partners, we must skip both `h` and `slots[c]` — the caller will set
+/// those to `Empty` regardless of any modification here.
+fn merge_strands(state: &mut Frontier, a: Slot, b: Slot, c: usize) -> Option<bool> {
     match (a, b) {
-        (Slot::Free, Slot::Free) => {
-            // Two free strands meet: combined strand has 2 placed endpoints.
-            // The path closes here.
-            Some(true)
-        }
+        (Slot::Free, Slot::Free) => Some(true),
         (Slot::Free, Slot::Arc(id)) | (Slot::Arc(id), Slot::Free) => {
-            // Free strand merges with arc strand. The arc's other end
-            // becomes the Free of the merged strand.
-            for s in state.slots.iter_mut() {
-                if matches!(s, Slot::Arc(i) if *i == id) {
+            for (i, s) in state.slots.iter_mut().enumerate() {
+                if i == c {
+                    continue;
+                }
+                if matches!(s, Slot::Arc(j) if *j == id) {
                     *s = Slot::Free;
                     return Some(false);
                 }
             }
-            if matches!(state.h, Slot::Arc(i) if i == id) {
-                state.h = Slot::Free;
-                return Some(false);
-            }
+            // `h` is also being consumed (set to Empty after) so don't search it.
             None
         }
         (Slot::Arc(i), Slot::Arc(j)) if i == j => None, // cycle
         (Slot::Arc(i), Slot::Arc(j)) => {
-            // Different arc ids: relabel j → i.
-            for s in state.slots.iter_mut() {
-                if matches!(s, Slot::Arc(k) if *k == j) {
+            for (k, s) in state.slots.iter_mut().enumerate() {
+                if k == c {
+                    continue;
+                }
+                if matches!(s, Slot::Arc(id) if *id == j) {
                     *s = Slot::Arc(i);
                 }
             }
-            if matches!(state.h, Slot::Arc(k) if k == j) {
-                state.h = Slot::Arc(i);
-            }
+            // `h` is the input `a` — we don't relabel it (it'll be cleared).
             Some(false)
         }
         _ => None,
@@ -588,6 +597,13 @@ fn main() {
         "validate" => {
             validate_dp_against_naive();
         }
+        "debug" => {
+            // debug <start_r> <start_c> <length>
+            let sr: usize = args[1].parse().expect("start_r");
+            let sc: usize = args[2].parse().expect("start_c");
+            let l: usize = args[3].parse().expect("length");
+            debug_compare(sr, sc, l);
+        }
         "emit" => {
             // TODO(Phase 4): run full DP for all heads, all lengths, write
             // tables to `assets/saw_tables.bin`.
@@ -595,7 +611,7 @@ fn main() {
             std::process::exit(1);
         }
         _ => {
-            eprintln!("Usage: build_saw_tables [smoke|verify|validate|emit]");
+            eprintln!("Usage: build_saw_tables [smoke|verify|validate|debug|emit]");
             std::process::exit(2);
         }
     }
@@ -835,7 +851,7 @@ mod tests {
 /// transitions are implemented correctly, this should pass clean.
 fn validate_dp_against_naive() {
     let dp = Dp::new();
-    let max_l = 4;
+    let max_l = 12;
     let mut total = 0usize;
     let mut failures = Vec::new();
     let mut per_l_total = vec![0usize; max_l + 1];
@@ -879,4 +895,136 @@ fn validate_dp_against_naive() {
         eprintln!("  ... ({} more)", failures.len() - 8);
     }
     std::process::exit(1);
+}
+
+// --- Debug: enumerate SAWs and run each through DP transitions ---
+
+fn enumerate_saws(start: u8, length: usize) -> Vec<Vec<u8>> {
+    fn dfs(pos: u8, visited: u64, path: &mut Vec<u8>, remaining: usize, out: &mut Vec<Vec<u8>>) {
+        if remaining == 0 {
+            out.push(path.clone());
+            return;
+        }
+        let mut cand = NEIGHBOR_MASKS[pos as usize] & !visited;
+        while cand != 0 {
+            let next = cand.trailing_zeros() as u8;
+            cand &= cand - 1;
+            path.push(next);
+            dfs(next, visited | (1u64 << next), path, remaining - 1, out);
+            path.pop();
+        }
+    }
+    let mut out = Vec::new();
+    let mut path = vec![start];
+    dfs(start, 1u64 << start, &mut path, length, &mut out);
+    out
+}
+
+/// Run a specific SAW through the DP transitions. Returns Ok(()) if the DP
+/// would accept this configuration, or Err with reason if rejected at some
+/// cell.
+fn dp_check_path(cells: &[u8], start: u8) -> Result<(), String> {
+    let mut path_edges_h: [[bool; GRID_W]; GRID_H] = [[false; GRID_W]; GRID_H];
+    let mut path_edges_v: [[bool; GRID_W]; GRID_H] = [[false; GRID_W]; GRID_H];
+    for w in cells.windows(2) {
+        let a = w[0] as usize;
+        let b = w[1] as usize;
+        let (ar, ac) = (a / 8, a % 8);
+        let (br, bc) = (b / 8, b % 8);
+        if ar == br && (ac + 1 == bc || bc + 1 == ac) {
+            // horizontal edge at row ar between cols min, max
+            path_edges_h[ar][ac.min(bc)] = true;
+        } else if ac == bc && (ar + 1 == br || br + 1 == ar) {
+            // vertical edge at col ac between rows min, max
+            path_edges_v[ar.min(br)][ac] = true;
+        }
+    }
+
+    let mut state = Frontier::empty();
+    let mut edges = 0usize;
+    let mut next_arc = 0u8;
+
+    for r in 0..GRID_H {
+        for c in 0..GRID_W {
+            let is_start = r * 8 + c == start as usize;
+            let right_chosen = c < GRID_W - 1 && path_edges_h[r][c];
+            let down_chosen = r < GRID_H - 1 && path_edges_v[r][c];
+            let mut local = next_arc;
+            match transition(
+                &state,
+                c,
+                is_start,
+                false,
+                right_chosen,
+                down_chosen,
+                &mut local,
+            ) {
+                Some(new_state) => {
+                    state = new_state.canonical();
+                    edges += (right_chosen as usize) + (down_chosen as usize);
+                    next_arc = local;
+                }
+                None => {
+                    return Err(format!(
+                        "rejected at cell ({r},{c}): left={} up={} right={} down={} closed={} h={:?} slot[c]={:?}",
+                        !matches!(state.h, Slot::Empty),
+                        !matches!(state.slots[c], Slot::Empty),
+                        right_chosen,
+                        down_chosen,
+                        state.closed,
+                        state.h,
+                        state.slots[c],
+                    ));
+                }
+            }
+        }
+    }
+
+    if edges != cells.len() - 1 {
+        return Err(format!(
+            "edges mismatch: {edges} vs expected {}",
+            cells.len() - 1
+        ));
+    }
+    if state.open_count() != 0 {
+        return Err(format!("open_count != 0 at end: {}", state.open_count()));
+    }
+    if state.closed != 1 {
+        return Err(format!("closed != 1 at end: {}", state.closed));
+    }
+    Ok(())
+}
+
+fn fmt_path(path: &[u8]) -> String {
+    path.iter()
+        .map(|c| format!("({},{})", c / 8, c % 8))
+        .collect::<Vec<_>>()
+        .join(" -> ")
+}
+
+fn debug_compare(sr: usize, sc: usize, l: usize) {
+    let start = cell(sr, sc);
+    let naive_paths = enumerate_saws(start, l);
+    let naive_total = naive_paths.len();
+    let dp_total = frontier_dp_count(start, l, 0);
+
+    println!("naive total: {naive_total}, dp total: {dp_total}");
+
+    let mut accepted = 0;
+    let mut rejected_with_reasons: Vec<(Vec<u8>, String)> = Vec::new();
+
+    for path in &naive_paths {
+        match dp_check_path(path, start) {
+            Ok(()) => accepted += 1,
+            Err(reason) => rejected_with_reasons.push((path.clone(), reason)),
+        }
+    }
+
+    println!("dp_check accepted: {accepted}/{naive_total}");
+    if !rejected_with_reasons.is_empty() {
+        println!("Rejected paths:");
+        for (path, reason) in &rejected_with_reasons {
+            println!("  {} :: {}", fmt_path(path), reason);
+        }
+    }
 }
