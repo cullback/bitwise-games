@@ -494,8 +494,9 @@ fn render(state: &State) -> FrameBuffer {
     let dirs = walking_dirs(state.head_dir, &state.turns);
 
     if !dead {
-        // Score (snake length) — hidden on death
-        draw_number(&mut commands, state.length as u32, 4, 4);
+        // Score = apples eaten. Snake spawns at length 2 (head + body[0]);
+        // each apple adds one cell, so apples = length − 2.
+        draw_number(&mut commands, (state.length - 2) as u32, 4, 4);
     }
 
     // Game-area background + border
