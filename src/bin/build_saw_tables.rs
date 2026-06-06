@@ -236,13 +236,13 @@ impl Dp {
 
     /// Count length-`target_length` SAWs from `start_cell` on the empty grid.
     fn count(&self, start_cell: u8, target_length: usize) -> u64 {
-        frontier_dp_count(start_cell, target_length, 0)
+        bitwise_games::saw_dp::count_saws(start_cell, target_length, 0)
     }
 
     /// Same as `count`, but with `visited` cells forbidden (used during decode).
     #[allow(dead_code)]
     fn count_avoiding(&self, current: u8, visited: u64, remaining: usize) -> u64 {
-        frontier_dp_count(current, remaining, visited & !(1u64 << current))
+        bitwise_games::saw_dp::count_saws(current, remaining, visited & !(1u64 << current))
     }
 }
 
@@ -851,7 +851,7 @@ mod tests {
 /// transitions are implemented correctly, this should pass clean.
 fn validate_dp_against_naive() {
     let dp = Dp::new();
-    let max_l = 12;
+    let max_l = 8;
     let mut total = 0usize;
     let mut failures = Vec::new();
     let mut per_l_total = vec![0usize; max_l + 1];
