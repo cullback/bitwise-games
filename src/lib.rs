@@ -6,6 +6,7 @@ mod game;
 pub mod permutation;
 pub mod rng;
 pub mod saw_dp;
+pub mod saw_rank;
 mod server;
 pub mod sprite;
 pub mod varlen;
