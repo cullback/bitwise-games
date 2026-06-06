@@ -119,25 +119,74 @@ impl fmt::Debug for Slot {
     }
 }
 
-/// Frontier state across all `GRID_W` columns at the current row.
+/// Frontier state across all `GRID_W` columns plus the horizontal "in-flight"
+/// edge between the previously-processed cell and the next one in the same row.
+///
+/// `h` is the active horizontal: when we processed cell (r, c-1), we may have
+/// decided to extend the path rightward — that commits a path edge into (r, c).
+/// `h` records the open end of that edge until (r, c) consumes it.
+///
+/// `slots[j]` is the active vertical at column j for the next row to be
+/// touched at that column. Between rows it represents downward edges from the
+/// row just finished; mid-row it's a mix (see comment in the DP loop).
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Frontier {
     slots: [Slot; GRID_W],
+    h: Slot,
 }
 
 impl Frontier {
     fn empty() -> Self {
         Frontier {
             slots: [Slot::Empty; GRID_W],
+            h: Slot::Empty,
         }
     }
 
     /// Total number of free + arc endpoints. Useful as a sanity check.
+    #[allow(dead_code)]
     fn open_count(&self) -> usize {
-        self.slots
+        let from_slots = self
+            .slots
             .iter()
             .filter(|s| !matches!(s, Slot::Empty))
-            .count()
+            .count();
+        let from_h = !matches!(self.h, Slot::Empty) as usize;
+        from_slots + from_h
+    }
+
+    /// Relabel `Arc` ids so they appear in left-to-right first-seen order
+    /// across `slots[0..W]` then `h`. Two states differing only by id naming
+    /// canonicalize to the same value and therefore collide in the DP table.
+    #[allow(dead_code)]
+    fn canonical(&self) -> Self {
+        let mut next_id: u8 = 0;
+        let mut mapping: [Option<u8>; 16] = [None; 16];
+        let mut relabel = |slot: Slot| -> Slot {
+            match slot {
+                Slot::Arc(id) => {
+                    let idx = id as usize;
+                    if let Some(new) = mapping[idx] {
+                        Slot::Arc(new)
+                    } else {
+                        let new = next_id;
+                        mapping[idx] = Some(new);
+                        next_id += 1;
+                        Slot::Arc(new)
+                    }
+                }
+                other => other,
+            }
+        };
+        let mut new_slots = [Slot::Empty; GRID_W];
+        for (i, s) in self.slots.iter().enumerate() {
+            new_slots[i] = relabel(*s);
+        }
+        let new_h = relabel(self.h);
+        Frontier {
+            slots: new_slots,
+            h: new_h,
+        }
     }
 }
 
@@ -147,7 +196,7 @@ impl fmt::Debug for Frontier {
         for s in self.slots.iter() {
             write!(f, "{s:?}")?;
         }
-        write!(f, "]")
+        write!(f, "|h={:?}]", self.h)
     }
 }
 
@@ -314,6 +363,143 @@ fn verify_naive_oracle() {
 
 fn mark(ok: bool) -> &'static str {
     if ok { "OK " } else { "FAIL" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fr(slots: [Slot; GRID_W], h: Slot) -> Frontier {
+        Frontier { slots, h }
+    }
+
+    #[test]
+    fn canonical_relabels_in_first_seen_order() {
+        // Original ids 5, 2, 5 → canonical 0, 1, 0.
+        let original = fr(
+            [
+                Slot::Arc(5),
+                Slot::Empty,
+                Slot::Arc(2),
+                Slot::Empty,
+                Slot::Arc(5),
+                Slot::Empty,
+                Slot::Empty,
+                Slot::Empty,
+            ],
+            Slot::Arc(2),
+        );
+        let want = fr(
+            [
+                Slot::Arc(0),
+                Slot::Empty,
+                Slot::Arc(1),
+                Slot::Empty,
+                Slot::Arc(0),
+                Slot::Empty,
+                Slot::Empty,
+                Slot::Empty,
+            ],
+            Slot::Arc(1),
+        );
+        assert_eq!(original.canonical(), want);
+    }
+
+    #[test]
+    fn canonical_preserves_free_and_empty() {
+        let original = fr(
+            [
+                Slot::Free,
+                Slot::Arc(3),
+                Slot::Empty,
+                Slot::Arc(7),
+                Slot::Free,
+                Slot::Arc(3),
+                Slot::Empty,
+                Slot::Arc(7),
+            ],
+            Slot::Empty,
+        );
+        let canon = original.canonical();
+        assert_eq!(canon.slots[0], Slot::Free);
+        assert_eq!(canon.slots[4], Slot::Free);
+        assert_eq!(canon.slots[2], Slot::Empty);
+        assert_eq!(canon.slots[6], Slot::Empty);
+        assert_eq!(canon.h, Slot::Empty);
+        // 3 first → 0, 7 second → 1
+        assert_eq!(canon.slots[1], Slot::Arc(0));
+        assert_eq!(canon.slots[3], Slot::Arc(1));
+        assert_eq!(canon.slots[5], Slot::Arc(0));
+        assert_eq!(canon.slots[7], Slot::Arc(1));
+    }
+
+    #[test]
+    fn canonical_idempotent() {
+        let s = fr(
+            [
+                Slot::Arc(0),
+                Slot::Arc(1),
+                Slot::Free,
+                Slot::Arc(0),
+                Slot::Empty,
+                Slot::Empty,
+                Slot::Arc(1),
+                Slot::Empty,
+            ],
+            Slot::Free,
+        );
+        assert_eq!(s.canonical(), s.canonical().canonical());
+    }
+
+    #[test]
+    fn canonical_unifies_equivalent_states() {
+        // Same structure, different ids: should canonicalize to the same value.
+        let a = fr(
+            [
+                Slot::Arc(0),
+                Slot::Empty,
+                Slot::Arc(0),
+                Slot::Arc(1),
+                Slot::Empty,
+                Slot::Arc(1),
+                Slot::Empty,
+                Slot::Empty,
+            ],
+            Slot::Empty,
+        );
+        let b = fr(
+            [
+                Slot::Arc(9),
+                Slot::Empty,
+                Slot::Arc(9),
+                Slot::Arc(4),
+                Slot::Empty,
+                Slot::Arc(4),
+                Slot::Empty,
+                Slot::Empty,
+            ],
+            Slot::Empty,
+        );
+        assert_eq!(a.canonical(), b.canonical());
+    }
+
+    #[test]
+    fn open_count_includes_h() {
+        let s = fr(
+            [
+                Slot::Free,
+                Slot::Empty,
+                Slot::Arc(0),
+                Slot::Arc(0),
+                Slot::Empty,
+                Slot::Empty,
+                Slot::Empty,
+                Slot::Empty,
+            ],
+            Slot::Free,
+        );
+        assert_eq!(s.open_count(), 4); // 1 free + 2 arc + 1 in h
+    }
 }
 
 /// Cross-check `Dp::count` against `naive_count` for every (start, length)

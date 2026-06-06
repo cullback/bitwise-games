@@ -125,18 +125,18 @@ Subdivided into incremental commits, each gated by `validate`:
 `Dp::count` delegates to the naive oracle. `validate` passes 320/320. No
 speedup yet — the value is having a green build to refactor from.
 
-#### Phase 3b — frontier state machinery
+#### Phase 3b ✅ — frontier state machinery
 
-Implement the state representation and transition framework, _without_
-correctness yet (returns naive). Pieces:
+- `Frontier` storage: `slots: [Slot; 8]` + a separate `h: Slot` for the
+  horizontal connection from the previously-processed cell ✅
+- `Frontier::canonical()`: relabel `Arc(id)` ids by left-to-right first
+  appearance so equivalent matchings collide in the DP hash map ✅
+- Unit tests cover relabel, idempotence, equivalence-class unification,
+  and `open_count` including the horizontal slot (5/5 pass)
 
-1. `Frontier` storage: `slots: [Slot; 8]` + a separate `h: Slot` for the
-   horizontal connection from the previously-processed cell.
-2. State canonicalization: relabel `Arc(id)` ids by left-to-right first
-   appearance so equivalent matchings hash equal.
-3. `Frontier` → packed `u32` key suitable for use as a HashMap key.
-
-This commit just adds plumbing; `count` still calls naive.
+Deferred: bit-packed integer key for the HashMap (premature; `Frontier`
+derives `Hash` so it's usable as a key directly; we'll measure DP hot
+path and pack only if needed).
 
 #### Phase 3c — empty-grid count (start cell handling)
 
