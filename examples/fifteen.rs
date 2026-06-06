@@ -8,28 +8,48 @@
 
 # Maximize
 
-State space coverage. The board is a permutation of {0, 1, …, 15} (0 =
-empty), and every arrangement gets a unique index 0..16! − 1 ≈ 2.09e13
-via the `permutation` module's lexicographic rank. The rank itself
-*is* the state — no bit-packing involved. ≈44 bits used; the top 20
-bits are unused.
+State space coverage. Of the 16! arrangements of {0, 1, …, 15} (0 =
+empty), only half — 16!/2 ≈ 1.05e13 — are reachable from solved (the
+parity invariant, see Notes). We fold that bit out and give every
+reachable board a unique index 0..16!/2 − 1. The index itself *is* the
+state — no bit-packing on top. ⌈log2(16!/2)⌉ = 44 bits used; top 20
+unused.
+
+(The full lex rank spans 0..16! − 1 ≈ 2.09e13, which needs 45 bits;
+folding the parity bit buys back exactly one, landing at 44. 43 is a
+quarter-bit out of reach — there is no second invariant to spend.)
 
 # Encoding
 
-| Start | Length | Description                                            |
-|-------|--------|--------------------------------------------------------|
-|     0 |    ~44 | lex rank of the 16-element permutation (0..16! − 1)    |
-|    44 |    ~20 | unused                                                 |
+| Start | Length | Description                                                |
+|-------|--------|------------------------------------------------------------|
+|     0 |     44 | blank_cell × 15!/2 + folded rank of the 15 numbered tiles |
+|    44 |     20 | unused                                                     |
 
 # Notes
 
-**Parity invariant.** Only half of the 16! permutations are reachable
-from the solved state. Every legal slide flips both the permutation's
-parity (an odd transposition with the empty cell) and the parity of
-the empty cell's row index, so `perm_parity XOR empty_row_parity` is a
-conserved invariant. We start from solved and only apply legal moves,
-so the scramble always lands in solvable states — but a hand-rolled u64
-less than 16! would be unsolvable ~50% of the time.
+**Parity invariant.** Counting inversions over the 15 *numbered* tiles
+only (blank excluded), `inversions XOR blank_row` is conserved by every
+legal slide: a horizontal slide leaves both terms unchanged; a vertical
+slide flips both. The solved board has value 1, so reachable boards are
+exactly those with invariant 1 — half of all arrangements.
+
+**Folding out the redundant bit.** We factor the blank out first
+(`16!/2 = 16 × 15!/2`): the blank cell goes in the high part, and the
+low part ranks the numbered tiles. Written in the factorial number
+system, the 15-tile lex rank's radix-2 digit — `nums[14] < nums[13]` —
+carries the redundant parity. `encode` subtracts it (making the rank
+even, since every higher factorial weight is a multiple of 2) and
+halves; `decode` doubles, unranks with that digit forced to 0, and
+swaps the last two numbered tiles if the invariant says the digit was
+really 1. That swap exchanges two numbered tiles without moving the
+blank, so it always toggles reachability — the invariant alone resolves
+the ambiguity, with no risk of two reachable boards colliding. (Folding
+the *full* 16-permutation's last digit instead would collide the solved
+board with its one-slide neighbour, since swapping the last two cells
+can move the blank — a legal move between two real states.) Result: a
+perfect bijection between reachable boards and 0..16!/2 − 1, so a
+hand-rolled u64 in range always decodes to a solvable board.
 
 */
 use bitwise_games::draw_command::{BLUE, DARK_BLUE, DrawCommand, GREEN, WHITE};
@@ -37,7 +57,10 @@ use bitwise_games::frame_buffer::{self, FrameBuffer};
 use bitwise_games::permutation::{from_permutation, to_permutation};
 use bitwise_games::{Game, Key};
 
-const SYMBOLS: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+// The 15 numbered tiles (the blank, 0, is factored out and stored separately).
+const TILE_SYMBOLS: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+// 15! / 2 — folded arrangements of the numbered tiles per blank position.
+const HALF_15_FACT: u64 = 653_837_184_000;
 
 const BOARD_PX: u32 = frame_buffer::WIDTH;
 const TILE: u32 = BOARD_PX / 4;
@@ -67,20 +90,83 @@ struct State {
 
 fn solved_board() -> State {
     let mut tiles = [0u8; 16];
-    for i in 0..15 {
-        tiles[i] = (i + 1) as u8;
+    for (i, slot) in tiles.iter_mut().take(15).enumerate() {
+        *slot = (i + 1) as u8;
     }
     State { tiles }
 }
 
-fn decode(state: u64) -> State {
-    State {
-        tiles: to_permutation(state, &SYMBOLS).try_into().unwrap(),
+/// The 15 numbered tiles in row-major order, with the blank skipped.
+fn numbered(tiles: &[u8; 16]) -> [u8; 15] {
+    let mut out = [0u8; 15];
+    let mut k = 0;
+    for &t in tiles {
+        if t != 0 {
+            out[k] = t;
+            k += 1;
+        }
     }
+    out
+}
+
+/// Rebuild a board from a blank cell and the numbered tiles (row-major order).
+fn assemble(blank: usize, numbered: &[u8; 15]) -> [u8; 16] {
+    let mut tiles = [0u8; 16];
+    let mut k = 0;
+    for (cell, slot) in tiles.iter_mut().enumerate() {
+        if cell != blank {
+            *slot = numbered[k];
+            k += 1;
+        }
+    }
+    tiles
+}
+
+/// Whether a board is reachable from the solved state. The conserved invariant
+/// is `inversions(numbered tiles) XOR blank_row`, counted over the 15 numbered
+/// tiles only — every legal slide preserves it. The solved board has value 1
+/// (0 inversions, blank in row 3), so reachable boards are exactly those with
+/// invariant 1.
+fn reachable(tiles: &[u8; 16]) -> bool {
+    let nums = numbered(tiles);
+    let mut inversions = 0u32;
+    for i in 0..15 {
+        for j in (i + 1)..15 {
+            inversions += u32::from(nums[j] < nums[i]);
+        }
+    }
+    let blank_row = tiles.iter().position(|&t| t == 0).unwrap() / 4;
+    (inversions + blank_row as u32) & 1 == 1
 }
 
 fn encode(state: &State) -> u64 {
-    from_permutation(&state.tiles)
+    // Blank position (16 choices) lives in the high part; the low part is the
+    // numbered tiles' lex rank with its redundant parity bit folded out. The
+    // radix-2 factorial digit `nums[14] < nums[13]` is that bit: dropping it
+    // makes the rank even (every higher factorial weight is a multiple of 2),
+    // so halving is lossless. Folding a *numbered-tile* swap never moves the
+    // blank, so it always toggles reachability — no two reachable boards collide.
+    let blank = find_empty(state) as u64;
+    let nums = numbered(&state.tiles);
+    let rank = from_permutation(&nums);
+    let last_digit = u64::from(nums[14] < nums[13]);
+    blank * HALF_15_FACT + (rank - last_digit) / 2
+}
+
+fn decode(code: u64) -> State {
+    let blank = (code / HALF_15_FACT) as usize;
+    let reduced = code % HALF_15_FACT;
+    // Unrank with the dropped digit forced to 0, then let the invariant decide
+    // whether it was really 1 — if so, the last two numbered tiles were swapped.
+    let mut nums: [u8; 15] = to_permutation(reduced * 2, &TILE_SYMBOLS)
+        .try_into()
+        .unwrap();
+    let mut tiles = assemble(blank, &nums);
+    if !reachable(&tiles) {
+        nums.swap(13, 14);
+        tiles = assemble(blank, &nums);
+    }
+    State { tiles }
 }
 
 fn find_empty(state: &State) -> usize {
@@ -242,4 +328,63 @@ impl Game for Fifteen {
 
 fn main() {
     bitwise_games::run_game::<Fifteen>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 16! / 2 — the number of reachable boards and the exclusive upper bound of
+    // the encoded state. Fits in 44 bits (2^43 < this <= 2^44).
+    const REACHABLE: u64 = 10_461_394_944_000;
+
+    #[test]
+    fn reachable_count_fits_in_44_bits() {
+        assert!(REACHABLE > (1u64 << 43), "would fit in 43 bits");
+        assert!(REACHABLE <= (1u64 << 44), "needs more than 44 bits");
+    }
+
+    #[test]
+    fn solved_board_is_reachable() {
+        assert!(reachable(&solved_board().tiles));
+    }
+
+    #[test]
+    fn scrambles_round_trip_and_stay_in_range() {
+        for seed in 0..2000u64 {
+            let board = scramble(seed);
+            assert!(reachable(&board.tiles), "scramble {seed} unsolvable");
+            let rank = encode(&board);
+            assert!(rank < REACHABLE, "seed {seed}: {rank} out of range");
+            assert_eq!(decode(rank).tiles, board.tiles, "seed {seed} round-trip");
+        }
+    }
+
+    #[test]
+    fn every_slide_round_trips() {
+        let mut board = scramble(1);
+        let dirs = [Key::Up, Key::Down, Key::Left, Key::Right];
+        let mut rng = 12345u64;
+        for _ in 0..5000 {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            try_slide(&mut board, dirs[((rng >> 33) & 3) as usize]);
+            assert!(reachable(&board.tiles));
+            assert_eq!(decode(encode(&board)).tiles, board.tiles);
+        }
+    }
+
+    #[test]
+    fn arbitrary_ranks_decode_to_solvable_boards() {
+        // Any u64 in range must decode to a valid, solvable permutation that
+        // encodes back to itself — the property a hand-rolled state relies on.
+        let all_symbols: [u8; 16] = std::array::from_fn(|i| i as u8);
+        for &rank in &[0, 1, 2, 7, 1000, 1_000_000, REACHABLE / 2, REACHABLE - 1] {
+            let board = decode(rank);
+            let mut sorted = board.tiles;
+            sorted.sort_unstable();
+            assert_eq!(sorted, all_symbols, "rank {rank}: not a permutation");
+            assert!(reachable(&board.tiles), "rank {rank}: unsolvable");
+            assert_eq!(encode(&board), rank, "rank {rank}: no round-trip");
+        }
+    }
 }
