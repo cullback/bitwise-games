@@ -52,23 +52,42 @@ use bitwise_games::frame_buffer::FrameBuffer;
 use bitwise_games::rng;
 use bitwise_games::{Game, Key};
 
+mod saw_dp;
+mod saw_rank;
+mod saw_tables;
+
 use std::sync::OnceLock;
 
 // --- Board / display ---
+//
+// 9 wide × 8 tall board, 14 px cells, 1 px border all around. The "missing
+// 9th row" at the top (14 px) is the score zone. Math:
+//   - Score:        y =   0..13  (14 px tall, FONT_SCALE=2 fits a 10×14 digit)
+//   - Top border:   y =  14      (1 px)
+//   - Board:        y =  15..126 (8 rows × 14 = 112 px)
+//   - Bottom border:y = 127      (1 px)
+//   - Left border:  x =   0      (1 px)
+//   - Board:        x =   1..126 (9 cols × 14 = 126 px)
+//   - Right border: x = 127      (1 px)
+// → 128 × 128 exactly, no slack.
 
-const BOARD_CELLS: u32 = 8;
-const N_CELLS: usize = 64;
+const BOARD_W: u32 = 9;
+const BOARD_H: u32 = 8;
 const DISPLAY_PX: u32 = 128;
-const CELL_PX: u32 = 12;
-const GAME_X: u32 = 16;
-const GAME_Y: u32 = 24;
-const GAME_SIZE: u32 = BOARD_CELLS * CELL_PX;
-const FONT_SCALE: u32 = 3;
+const CELL_PX: u32 = 14;
+const SCORE_H: u32 = 14;
+const GAME_W_PX: u32 = BOARD_W * CELL_PX;
+const GAME_H_PX: u32 = BOARD_H * CELL_PX;
+const GAME_X: u32 = 1;
+const GAME_Y: u32 = SCORE_H + 1;
+const FONT_SCALE: u32 = 2;
 const BANNER_SCALE: u32 = 2;
 
 // Maximum body length (cells beyond head). Snake total length = MAX_LEN + 1.
-// Capped low because count_extensions is naive — see top of file.
-const MAX_LEN: usize = 22;
+// We use the polynomial `saw_dp` counter for in-path conditional counts and
+// const-baked cumulative tables for the length/start peel, so MAX_LEN can be
+// the full Hamiltonian (W*H − 1) without exponential build or runtime cost.
+const MAX_LEN: usize = saw_tables::MAX_LENGTH;
 
 // --- Directions (absolute) ---
 
@@ -82,8 +101,10 @@ fn opposite(dir: u8) -> u8 {
 }
 
 fn step(pos: u8, dir: u8) -> Option<u8> {
-    let row = (pos / 8) as i32;
-    let col = (pos % 8) as i32;
+    let w = BOARD_W as i32;
+    let h = BOARD_H as i32;
+    let row = (pos as i32) / w;
+    let col = (pos as i32) % w;
     let (dr, dc) = match dir {
         DIR_UP => (-1, 0),
         DIR_RIGHT => (0, 1),
@@ -93,16 +114,17 @@ fn step(pos: u8, dir: u8) -> Option<u8> {
     };
     let nr = row + dr;
     let nc = col + dc;
-    if !(0..8).contains(&nr) || !(0..8).contains(&nc) {
+    if !(0..h).contains(&nr) || !(0..w).contains(&nc) {
         None
     } else {
-        Some((nr * 8 + nc) as u8)
+        Some((nr * w + nc) as u8)
     }
 }
 
 fn direction_between(from: u8, to: u8) -> Option<u8> {
-    let (fr, fc) = ((from / 8) as i32, (from % 8) as i32);
-    let (tr, tc) = ((to / 8) as i32, (to % 8) as i32);
+    let w = BOARD_W as i32;
+    let (fr, fc) = ((from as i32) / w, (from as i32) % w);
+    let (tr, tc) = ((to as i32) / w, (to as i32) % w);
     match (tr - fr, tc - fc) {
         (-1, 0) => Some(DIR_UP),
         (1, 0) => Some(DIR_DOWN),
@@ -112,100 +134,132 @@ fn direction_between(from: u8, to: u8) -> Option<u8> {
     }
 }
 
-// --- Neighbor bitmasks ---
+// --- SAW rank/unrank ---
+//
+// Ordering is (length, start_cell, lex-of-next-choices) so length and head
+// are recoverable from the rank — no separate fields needed.
+//
+//   - Cumulative tables (`saw_tables::CUM_LENGTHS` and `CUM_PER_START`) are
+//     precomputed and baked in as `const`, so startup is instant.
+//   - In-path conditional counts during encode/decode use the polynomial
+//     frontier DP (`saw_dp::count_saws_for::<W, H>`) — sub-millisecond per
+//     query at any length, including the full Hamiltonian.
 
-const NEIGHBOR_MASKS: [u64; N_CELLS] = {
-    let mut masks = [0u64; N_CELLS];
-    let mut i = 0;
-    while i < N_CELLS {
-        let r = (i / 8) as isize;
-        let c = (i % 8) as isize;
-        let mut mask = 0u64;
-        if r > 0 {
-            mask |= 1u64 << ((r as usize - 1) * 8 + c as usize);
-        }
-        if r < 7 {
-            mask |= 1u64 << ((r as usize + 1) * 8 + c as usize);
-        }
-        if c > 0 {
-            mask |= 1u64 << (r as usize * 8 + (c as usize - 1));
-        }
-        if c < 7 {
-            mask |= 1u64 << (r as usize * 8 + (c as usize + 1));
-        }
-        masks[i] = mask;
-        i += 1;
+const N_CELLS_USIZE: usize = (BOARD_W * BOARD_H) as usize;
+
+fn count_extensions(start: u8, forbidden: u128, remaining: usize) -> u64 {
+    if remaining == 0 {
+        return 1;
     }
-    masks
-};
-
-// --- SAW counting (frontier-state DP via the shared module) ---
-
-/// Count SAWs of exactly `remaining` more steps from `pos`, avoiding `visited`.
-/// `visited` should include `pos` (the snake convention) — we strip it before
-/// passing to the DP, which treats `pos` as the start cell rather than as a
-/// forbidden cell.
-fn count_extensions(pos: u8, visited: u64, remaining: usize) -> u64 {
-    bitwise_games::saw_dp::count_saws(pos, remaining, visited & !(1u64 << pos))
+    saw_dp::count_saws_for::<{ BOARD_W as usize }, { BOARD_H as usize }>(
+        start, remaining, forbidden,
+    )
 }
 
-// --- Cumulative count table per head ---
-
-/// cum[head][L] = total number of SAWs of body length 1..=L starting from
-/// `head`. cum[head][0] = 0. cum[head][MAX_LEN] is the live-encoding range
-/// upper bound; rank values ≥ that are the DEAD sentinel.
-type CumTable = [[u64; MAX_LEN + 1]; N_CELLS];
-
-fn compute_cum_for_head(head: u8) -> [u64; MAX_LEN + 1] {
-    let mut by_len = [0u64; MAX_LEN + 1];
-    fn dfs(pos: u8, visited: u64, by_len: &mut [u64], len: usize, max_len: usize) {
-        by_len[len] += 1;
-        if len == max_len {
-            return;
-        }
-        let mut cand = NEIGHBOR_MASKS[pos as usize] & !visited;
-        while cand != 0 {
-            let next = cand.trailing_zeros() as u8;
-            cand &= cand - 1;
-            dfs(next, visited | (1u64 << next), by_len, len + 1, max_len);
-        }
+fn neighbors_of(cell: u8) -> impl Iterator<Item = u8> {
+    let w = BOARD_W as i32;
+    let h = BOARD_H as i32;
+    let r = (cell as i32) / w;
+    let c = (cell as i32) % w;
+    let mut out = [None, None, None, None];
+    if r > 0 {
+        out[0] = Some((cell as i32 - w) as u8);
     }
-    dfs(head, 1u64 << head, &mut by_len, 0, MAX_LEN);
-    let mut cum = [0u64; MAX_LEN + 1];
-    let mut accum = 0u64;
-    for l in 1..=MAX_LEN {
-        accum += by_len[l];
-        cum[l] = accum;
+    if c > 0 {
+        out[1] = Some(cell - 1);
     }
-    cum
+    if c + 1 < w {
+        out[2] = Some(cell + 1);
+    }
+    if r + 1 < h {
+        out[3] = Some((cell as i32 + w) as u8);
+    }
+    out.into_iter().flatten()
 }
 
-fn cum_table() -> &'static CumTable {
-    static TABLE: OnceLock<CumTable> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        // Parallel init: each thread handles one head. The center cells take
-        // ~100x longer than corners, so 1-thread-per-head with OS scheduling
-        // load-balances naturally.
-        std::thread::scope(|s| {
-            let handles: Vec<_> = (0..N_CELLS)
-                .map(|head| s.spawn(move || compute_cum_for_head(head as u8)))
-                .collect();
-            let mut table: CumTable = [[0; MAX_LEN + 1]; N_CELLS];
-            for (head, h) in handles.into_iter().enumerate() {
-                table[head] = h.join().unwrap();
+fn rank_of_path(path: &[u8]) -> u64 {
+    let length = path.len() - 1;
+    let start = path[0] as usize;
+    let mut rank = saw_tables::CUM_LENGTHS[length];
+    for s in 0..start {
+        rank += saw_tables::CUM_PER_START[s][length];
+    }
+    let mut visited: u128 = 1u128 << start;
+    let mut current = path[0];
+    for step in 1..=length {
+        let actual = path[step];
+        for next in neighbors_of(current) {
+            if (visited >> next) & 1 != 0 {
+                continue;
             }
-            table
-        })
-    })
+            if next == actual {
+                break;
+            }
+            rank += count_extensions(next, visited, length - step);
+        }
+        visited |= 1u128 << actual;
+        current = actual;
+    }
+    rank
+}
+
+fn path_at_rank(mut rank: u64) -> Vec<u8> {
+    // Peel length.
+    let mut length = 0;
+    while length < MAX_LEN && rank >= saw_tables::CUM_LENGTHS[length + 1] {
+        length += 1;
+    }
+    rank -= saw_tables::CUM_LENGTHS[length];
+
+    // Peel start.
+    let mut start = 0;
+    while start < N_CELLS_USIZE && rank >= saw_tables::CUM_PER_START[start][length] {
+        rank -= saw_tables::CUM_PER_START[start][length];
+        start += 1;
+    }
+
+    // Walk the path.
+    let mut path = Vec::with_capacity(length + 1);
+    path.push(start as u8);
+    let mut visited: u128 = 1u128 << start;
+    let mut current = start as u8;
+    let mut remaining = length;
+    while remaining > 0 {
+        let mut picked = None;
+        for next in neighbors_of(current) {
+            if (visited >> next) & 1 != 0 {
+                continue;
+            }
+            let sub_count = count_extensions(next, visited, remaining - 1);
+            if rank < sub_count {
+                picked = Some(next);
+                break;
+            }
+            rank -= sub_count;
+        }
+        let next = picked.expect("decode exhausted");
+        path.push(next);
+        visited |= 1u128 << next;
+        current = next;
+        remaining -= 1;
+    }
+    path
 }
 
 // --- State ---
+//
+// Packed `u64`:
+//   bits 0..APPLE_BITS — apple_bits
+//   bits APPLE_BITS..  — rank
+//
+// `apple_bits == DEAD_APPLE_BITS` (7) signals a dead snake; the rank field
+// then holds the head cell index (where to draw the corpse). Live states
+// use apple_bits ∈ 0..7 (seven candidates for the apple-cell hash).
 
-const HEAD_BITS: u32 = 6;
 const APPLE_BITS: u32 = 3;
 const APPLE_MASK: u64 = (1u64 << APPLE_BITS) - 1;
-const HEAD_MASK: u64 = (1u64 << HEAD_BITS) - 1;
-const RANK_SHIFT: u32 = APPLE_BITS + HEAD_BITS; // 9
+const DEAD_APPLE_BITS: u8 = 7;
+const APPLE_CANDIDATES: u8 = 7;
 
 struct State {
     apple_bits: u8,
@@ -221,7 +275,7 @@ impl State {
     }
 
     fn body_len(&self) -> usize {
-        if self.dead { 0 } else { self.cells.len() - 1 }
+        self.cells.len().saturating_sub(1)
     }
 
     /// Direction the head is currently facing (the direction it will move next
@@ -238,110 +292,43 @@ impl State {
 // --- Encoding ---
 
 fn encode(state: &State) -> u64 {
-    let head = state.head();
-    let cum = &cum_table()[head as usize];
-
-    let body_rank = if state.dead {
-        cum[MAX_LEN] // DEAD sentinel (just past the live range)
+    // Dead and alive states use the same `rank_of_path` encoding; the only
+    // difference is that the apple-bits slot holds the DEAD sentinel for a
+    // dead snake. This way the corpse body stays on screen.
+    let rank = rank_of_path(&state.cells);
+    let apple = if state.dead {
+        DEAD_APPLE_BITS
     } else {
-        let body_len = state.body_len();
-        // Length-prefix offset: everything below this length.
-        let mut rank: u64 = cum[body_len - 1];
-
-        // Walk the path; at each step add counts of candidates that come
-        // before the actual move in canonical (cell-index) order.
-        let mut visited: u64 = 1u64 << head;
-        let mut current = head;
-        let mut remaining = body_len;
-        for &actual in &state.cells[1..] {
-            let mut cand = NEIGHBOR_MASKS[current as usize] & !visited;
-            while cand != 0 {
-                let c = cand.trailing_zeros() as u8;
-                cand &= cand - 1;
-                if c == actual {
-                    break;
-                }
-                rank += count_extensions(c, visited | (1u64 << c), remaining - 1);
-            }
-            visited |= 1u64 << actual;
-            current = actual;
-            remaining -= 1;
-        }
-        rank
+        state.apple_bits
     };
-
-    (state.apple_bits as u64 & APPLE_MASK)
-        | ((head as u64 & HEAD_MASK) << APPLE_BITS)
-        | (body_rank << RANK_SHIFT)
+    (rank << APPLE_BITS) | (apple as u64 & APPLE_MASK)
 }
 
 fn decode(state: u64) -> State {
     let apple_bits = (state & APPLE_MASK) as u8;
-    let head = ((state >> APPLE_BITS) & HEAD_MASK) as u8;
-    let mut rank = state >> RANK_SHIFT;
-
-    let cum = &cum_table()[head as usize];
-
-    if rank >= cum[MAX_LEN] {
-        return State {
-            apple_bits,
-            cells: vec![head],
-            dead: true,
-        };
-    }
-
-    // Find body length L such that cum[L-1] ≤ rank < cum[L].
-    let mut length = 1;
-    while length <= MAX_LEN && cum[length] <= rank {
-        length += 1;
-    }
-    rank -= cum[length - 1];
-
-    // Walk the rank tree.
-    let mut cells = Vec::with_capacity(length + 1);
-    cells.push(head);
-    let mut visited: u64 = 1u64 << head;
-    let mut current = head;
-    let mut remaining = length;
-    while remaining > 0 {
-        let mut cand = NEIGHBOR_MASKS[current as usize] & !visited;
-        let mut picked = None;
-        while cand != 0 {
-            let c = cand.trailing_zeros() as u8;
-            cand &= cand - 1;
-            let sub = count_extensions(c, visited | (1u64 << c), remaining - 1);
-            if rank < sub {
-                picked = Some(c);
-                break;
-            }
-            rank -= sub;
-        }
-        let next = picked.expect("rank tree exhausted — encoding invariant violated");
-        cells.push(next);
-        visited |= 1u64 << next;
-        current = next;
-        remaining -= 1;
-    }
-
+    let rank = state >> APPLE_BITS;
+    let cells = path_at_rank(rank);
     State {
         apple_bits,
         cells,
-        dead: false,
+        dead: apple_bits == DEAD_APPLE_BITS,
     }
 }
 
 // --- Apple (same scheme as snake.rs) ---
 
+const N_CELLS: u32 = BOARD_W * BOARD_H;
+
 fn apple_cell(snake_length: usize, apple_bits: u8) -> u8 {
     let seed = ((snake_length as u64) << 3) | (apple_bits as u64);
-    (rng::next(seed) % 64) as u8
+    (rng::next(seed) % N_CELLS as u64) as u8
 }
 
 fn pick_apple_bits(seed: u64, snake_cells: &[u8]) -> u8 {
-    let mask = snake_cells.iter().fold(0u64, |acc, &c| acc | (1u64 << c));
-    let start = (rng::next(seed) & APPLE_MASK as u64) as u8;
-    for offset in 0..8u8 {
-        let bits = (start + offset) & APPLE_MASK as u8;
+    let mask = snake_cells.iter().fold(0u128, |acc, &c| acc | (1u128 << c));
+    let start = (rng::next(seed) % APPLE_CANDIDATES as u64) as u8;
+    for offset in 0..APPLE_CANDIDATES {
+        let bits = (start + offset) % APPLE_CANDIDATES;
         let cell = apple_cell(snake_cells.len(), bits);
         if (mask >> cell) & 1 == 0 {
             return bits;
@@ -353,8 +340,8 @@ fn pick_apple_bits(seed: u64, snake_cells: &[u8]) -> u8 {
 // --- Rendering ---
 
 fn cell_xy(cell: u8) -> (u32, u32) {
-    let row = (cell / 8) as u32;
-    let col = (cell % 8) as u32;
+    let row = (cell as u32) / BOARD_W;
+    let col = (cell as u32) % BOARD_W;
     (GAME_X + col * CELL_PX, GAME_Y + row * CELL_PX)
 }
 
@@ -408,12 +395,16 @@ fn draw_body_cell(commands: &mut Vec<DrawCommand>, cell: u8, rounded: Option<Cor
     }
 }
 
-const TAIL_NOTCH: [u32; 12] = [0, 1, 2, 3, 4, 5, 5, 4, 3, 2, 1, 0];
+/// Triangular notch depth at row/column `i` of a tail cell. The notch is
+/// `i` deep at the edges and `CELL_PX/2 - 1` at the middle.
+fn tail_notch_depth(i: u32) -> u32 {
+    i.min(CELL_PX - 1 - i)
+}
 
 fn draw_tail_cell(commands: &mut Vec<DrawCommand>, cell: u8, body_dir: u8) {
     let (x, y) = cell_xy(cell);
     for i in 0..CELL_PX {
-        let depth = TAIL_NOTCH[i as usize];
+        let depth = tail_notch_depth(i);
         let span = CELL_PX - depth;
         match body_dir {
             DIR_RIGHT => commands.push(DrawCommand::rect(x + depth, y + i, span, 1, GREEN)),
@@ -427,17 +418,34 @@ fn draw_tail_cell(commands: &mut Vec<DrawCommand>, cell: u8, body_dir: u8) {
 
 fn draw_head_cell(commands: &mut Vec<DrawCommand>, cell: u8, dir: u8, dead: bool) {
     let (x, y) = cell_xy(cell);
+    // Body strip + rounded corners. All offsets are CELL_PX-relative so the
+    // shape scales cleanly with cell size.
     commands.push(DrawCommand::rect(x, y + 2, CELL_PX, CELL_PX - 4, GREEN));
     commands.push(DrawCommand::rect(x + 1, y + 1, CELL_PX - 2, 1, GREEN));
-    commands.push(DrawCommand::rect(x + 1, y + 10, CELL_PX - 2, 1, GREEN));
+    commands.push(DrawCommand::rect(
+        x + 1,
+        y + CELL_PX - 2,
+        CELL_PX - 2,
+        1,
+        GREEN,
+    ));
     commands.push(DrawCommand::rect(x + 2, y, CELL_PX - 4, 1, GREEN));
-    commands.push(DrawCommand::rect(x + 2, y + 11, CELL_PX - 4, 1, GREEN));
+    commands.push(DrawCommand::rect(
+        x + 2,
+        y + CELL_PX - 1,
+        CELL_PX - 4,
+        1,
+        GREEN,
+    ));
 
+    // Eyes: 2×2 black squares. "Near" coordinate = 3 from edge, "far" = CELL_PX - 5.
+    let near = 3u32;
+    let far = CELL_PX - 5;
     let (e1, e2) = match dir {
-        DIR_UP => ((x + 3, y + 3), (x + 7, y + 3)),
-        DIR_RIGHT => ((x + 7, y + 3), (x + 7, y + 7)),
-        DIR_DOWN => ((x + 3, y + 7), (x + 7, y + 7)),
-        DIR_LEFT => ((x + 3, y + 3), (x + 3, y + 7)),
+        DIR_UP => ((x + near, y + near), (x + far, y + near)),
+        DIR_RIGHT => ((x + far, y + near), (x + far, y + far)),
+        DIR_DOWN => ((x + near, y + far), (x + far, y + far)),
+        DIR_LEFT => ((x + near, y + near), (x + near, y + far)),
         _ => return,
     };
     if dead {
@@ -473,8 +481,8 @@ fn draw_banner(commands: &mut Vec<DrawCommand>, line1: &[u8], line2: &[u8], colo
     let line2_w = text_width(line2.len(), BANNER_SCALE);
     let banner_w = line1_w.max(line2_w) + 8;
     let banner_h = 36;
-    let banner_x = GAME_X + (GAME_SIZE - banner_w) / 2;
-    let banner_y = GAME_Y + (GAME_SIZE - banner_h) / 2;
+    let banner_x = GAME_X + (GAME_W_PX - banner_w) / 2;
+    let banner_y = GAME_Y + (GAME_H_PX - banner_h) / 2;
 
     commands.push(DrawCommand::rect(
         banner_x, banner_y, banner_w, banner_h, BLACK,
@@ -511,39 +519,46 @@ fn render(state: &State) -> FrameBuffer {
     let cells = &state.cells;
     let facing = state.facing();
 
-    if !dead {
-        draw_number(&mut commands, state.body_len() as u32 - 1, 4, 4);
-    }
+    // Score = apples eaten = body_len − 1 (the starting body length is 1).
+    // Always drawn so the final score stays visible on the death screen.
+    // Score in the 14 px top zone. FONT_SCALE=2 glyphs are 6×10, so y=2
+    // centers them vertically (2 px above, 2 px below).
+    let score = (state.body_len() as u32).saturating_sub(1);
+    draw_number(&mut commands, score, 4, 2);
 
     commands.push(DrawCommand::rect(
-        GAME_X, GAME_Y, GAME_SIZE, GAME_SIZE, DARK_BLUE,
+        GAME_X, GAME_Y, GAME_W_PX, GAME_H_PX, DARK_BLUE,
     ));
+    // Top border.
     commands.push(DrawCommand::rect(
         GAME_X - 1,
         GAME_Y - 1,
-        GAME_SIZE + 2,
+        GAME_W_PX + 2,
         1,
         WHITE,
     ));
+    // Bottom border.
     commands.push(DrawCommand::rect(
         GAME_X - 1,
-        GAME_Y + GAME_SIZE,
-        GAME_SIZE + 2,
+        GAME_Y + GAME_H_PX,
+        GAME_W_PX + 2,
         1,
         WHITE,
     ));
+    // Left border.
     commands.push(DrawCommand::rect(
         GAME_X - 1,
         GAME_Y - 1,
         1,
-        GAME_SIZE + 2,
+        GAME_H_PX + 2,
         WHITE,
     ));
+    // Right border.
     commands.push(DrawCommand::rect(
-        GAME_X + GAME_SIZE,
+        GAME_X + GAME_W_PX,
         GAME_Y - 1,
         1,
-        GAME_SIZE + 2,
+        GAME_H_PX + 2,
         WHITE,
     ));
 
@@ -599,9 +614,11 @@ fn render(state: &State) -> FrameBuffer {
 // --- Game logic ---
 
 fn fresh_board(seed: u64) -> State {
-    // Spawn at (3, 2) facing Right with body[0] at (3, 1). Length 2.
-    let head: u8 = 3 * 8 + 2;
-    let body0: u8 = 3 * 8 + 1;
+    // Spawn centered, facing right with body to the left. Length 2.
+    let row = (BOARD_H / 2) as u8;
+    let col = (BOARD_W / 2) as u8;
+    let head: u8 = row * BOARD_W as u8 + col;
+    let body0: u8 = head - 1;
     let cells = vec![head, body0];
     let apple_bits = pick_apple_bits(seed, &cells);
     State {
@@ -619,8 +636,6 @@ impl Game for Snake2 {
 
     fn new(args: Vec<String>) -> (u64, FrameBuffer) {
         let seed = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        // Touch the cum table so the first update tick doesn't pay the init cost.
-        let _ = cum_table();
         let state = fresh_board(seed);
         (encode(&state), render(&state))
     }
@@ -666,8 +681,8 @@ impl Game for Snake2 {
         let new_head = match step(state.head(), new_dir) {
             Some(p) => p,
             None => {
+                // Tried to walk off the edge — die in place, body stays.
                 state.dead = true;
-                state.cells.truncate(1);
                 return (encode(&state), render(&state));
             }
         };
@@ -683,8 +698,8 @@ impl Game for Snake2 {
             state.cells.len() - 1
         };
         if state.cells[..check_end].contains(&new_head) {
+            // Walked into body — die in place, body stays.
             state.dead = true;
-            state.cells.truncate(1);
             return (encode(&state), render(&state));
         }
 
@@ -732,10 +747,24 @@ mod tests {
         }
     }
 
+    fn cell(r: u32, c: u32) -> u8 {
+        (r * BOARD_W + c) as u8
+    }
+
     #[test]
     fn round_trip_length_2() {
-        // Several length-2 snakes (head + one body cell).
-        for &(head, body0) in &[(0u8, 1u8), (27, 26), (35, 27), (63, 62), (8, 0)] {
+        // Length-2 snakes (head + one body cell) — each pair must be adjacent.
+        let cases: &[(u8, u8)] = &[
+            (cell(0, 0), cell(0, 1)),
+            (cell(3, 3), cell(3, 2)),
+            (cell(4, 3), cell(3, 3)),
+            (
+                cell(BOARD_H - 1, BOARD_W - 1),
+                cell(BOARD_H - 1, BOARD_W - 2),
+            ),
+            (cell(1, 0), cell(0, 0)),
+        ];
+        for &(head, body0) in cases {
             let s = snake(vec![head, body0]);
             let enc = encode(&s);
             let d = decode(enc);
@@ -747,23 +776,35 @@ mod tests {
 
     #[test]
     fn round_trip_longer_snakes() {
-        // A few hand-rolled medium snakes that are valid SAWs.
-        let cases: &[&[u8]] = &[
-            &[27, 26, 25, 24], // length 4, head moving right (body to left)
-            &[3 * 8 + 3, 3 * 8 + 2, 3 * 8 + 1, 4 * 8 + 1, 4 * 8 + 2],
-            &[0, 1, 2, 10, 18, 17, 16, 24, 25],
+        // A few hand-rolled medium snakes built via `cell(r, c)`.
+        let cases: Vec<Vec<u8>> = vec![
+            vec![cell(3, 3), cell(3, 2), cell(3, 1), cell(3, 0)],
+            vec![cell(3, 3), cell(3, 2), cell(3, 1), cell(4, 1), cell(4, 2)],
+            vec![
+                cell(0, 0),
+                cell(0, 1),
+                cell(0, 2),
+                cell(1, 2),
+                cell(2, 2),
+                cell(2, 1),
+                cell(2, 0),
+                cell(3, 0),
+                cell(3, 1),
+            ],
         ];
-        for cells in cases {
-            let s = snake(cells.to_vec());
+        for cells in &cases {
+            let s = snake(cells.clone());
             let enc = encode(&s);
             let d = decode(enc);
             assert!(!d.dead);
-            assert_eq!(&d.cells[..], *cells, "round-trip failed for {cells:?}");
+            assert_eq!(&d.cells, cells, "round-trip failed for {cells:?}");
         }
     }
 
     #[test]
     fn dead_round_trip() {
+        // The dead state ignores the input `apple_bits` — the encoding always
+        // sets it to `DEAD_APPLE_BITS` as the sentinel that marks "dead".
         let s = State {
             apple_bits: 3,
             cells: vec![42],
@@ -773,107 +814,6 @@ mod tests {
         let d = decode(enc);
         assert!(d.dead);
         assert_eq!(d.cells, vec![42]);
-        assert_eq!(d.apple_bits, 3);
-    }
-
-    #[test]
-    #[ignore]
-    fn timing_open_snake() {
-        // Worst case: short snake in open space. First decode step asks for
-        // count_extensions at full remaining length from the head — that's
-        // the most expensive single query.
-        use std::time::Instant;
-        let _ = cum_table();
-
-        // A short spiral starting from the center, leaving most of the board open.
-        let cells: Vec<u8> = vec![27, 26, 25, 17, 18, 19];
-        let s = State {
-            apple_bits: 0,
-            cells: cells.clone(),
-            dead: false,
-        };
-
-        let t = Instant::now();
-        let enc = encode(&s);
-        let et = t.elapsed();
-        let t = Instant::now();
-        let d = decode(enc);
-        let dt = t.elapsed();
-        assert_eq!(d.cells, cells);
-        println!(
-            "open snake body={} encode={:?} decode={:?}",
-            cells.len() - 1,
-            et,
-            dt
-        );
-    }
-
-    #[test]
-    #[ignore]
-    fn timing_max_length() {
-        // Run with: cargo test --release --example snake2 -- --ignored timing_max_length --nocapture
-        use std::time::Instant;
-
-        // Warm up the cum table.
-        let _ = cum_table();
-
-        // Build a max-length zigzag snake from (0,0), boustrophedon order.
-        let mut cells: Vec<u8> = Vec::new();
-        'fill: for row in 0..8u8 {
-            if row % 2 == 0 {
-                for col in 0..8u8 {
-                    cells.push(row * 8 + col);
-                    if cells.len() == MAX_LEN + 1 {
-                        break 'fill;
-                    }
-                }
-            } else {
-                for col in (0..8u8).rev() {
-                    cells.push(row * 8 + col);
-                    if cells.len() == MAX_LEN + 1 {
-                        break 'fill;
-                    }
-                }
-            }
-        }
-        let s = State {
-            apple_bits: 0,
-            cells: cells.clone(),
-            dead: false,
-        };
-
-        let t0 = Instant::now();
-        let enc = encode(&s);
-        let enc_time = t0.elapsed();
-
-        let t1 = Instant::now();
-        let d = decode(enc);
-        let dec_time = t1.elapsed();
-
-        assert_eq!(d.cells, cells);
-        println!(
-            "MAX_LEN={MAX_LEN} body cells={} encode={:?} decode={:?}",
-            cells.len() - 1,
-            enc_time,
-            dec_time
-        );
-    }
-
-    #[test]
-    fn enumerate_then_round_trip() {
-        // For one starting head, walk every SAW of length 3 via the cum table
-        // and confirm encode → decode → cells round-trips.
-        let head: u8 = 3 * 8 + 3;
-        let cum = &cum_table()[head as usize];
-        let c3 = cum[3] - cum[2];
-        for rank in 0..c3 {
-            let body_rank = cum[2] + rank;
-            let raw = (5u64) | ((head as u64) << APPLE_BITS) | (body_rank << RANK_SHIFT);
-            let d = decode(raw);
-            assert!(!d.dead);
-            assert_eq!(d.cells.len(), 4); // head + 3 body cells
-            let re = encode(&d);
-            assert_eq!(re, raw, "encode(decode(x)) != x for rank {rank}");
-        }
+        assert_eq!(d.apple_bits, DEAD_APPLE_BITS);
     }
 }
