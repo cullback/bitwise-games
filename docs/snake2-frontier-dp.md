@@ -106,11 +106,15 @@ Inverse: walk the path, sum counts of "earlier" candidate moves.
 - saw_count.rs investigation tool confirming bit-budget headroom
 - This doc
 
-### Phase 2: Frontier DP skeleton
+### Phase 2: Frontier DP skeleton ✅
 
 - `src/bin/build_saw_tables.rs` binary with frontier state types and module structure
 - Stub transitions that compile but don't yet compute correct counts
-- Unit tests against naive counts for L ∈ {1, 2, 3, 4} on a tiny grid
+- `verify` subcommand cross-checks the naive oracle against OEIS A001411
+  (matching at L ≤ 3 from center cells) and hand-computed corner/edge fixtures
+- `validate` subcommand cross-checks `Dp::count` against the naive oracle for
+  every (start, length) with L ≤ 4 — currently fails 320/320, becomes the
+  target spec for Phase 3
 
 ### Phase 3: Correct transitions
 
