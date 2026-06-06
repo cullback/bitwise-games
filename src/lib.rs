@@ -5,6 +5,7 @@ pub mod frame_buffer;
 mod game;
 pub mod permutation;
 pub mod rng;
+pub mod saw_dp;
 mod server;
 pub mod sprite;
 pub mod varlen;

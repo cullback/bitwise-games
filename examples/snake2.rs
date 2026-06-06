@@ -68,7 +68,7 @@ const BANNER_SCALE: u32 = 2;
 
 // Maximum body length (cells beyond head). Snake total length = MAX_LEN + 1.
 // Capped low because count_extensions is naive — see top of file.
-const MAX_LEN: usize = 22;
+const MAX_LEN: usize = 15;
 
 // --- Directions (absolute) ---
 
@@ -139,84 +139,14 @@ const NEIGHBOR_MASKS: [u64; N_CELLS] = {
     masks
 };
 
-// --- SAW counting (backtracking with prunes) ---
-
-/// Number of unvisited cells reachable from `pos` via BFS through `available`
-/// (which should be `!visited`). Used to prune branches that can't possibly
-/// be extended to `remaining` more cells.
-fn reachable_count(pos: u8, available: u64) -> u32 {
-    let mut reached = 1u64 << pos;
-    let mut frontier = reached;
-    while frontier != 0 {
-        let mut next_layer = 0u64;
-        let mut f = frontier;
-        while f != 0 {
-            let c = f.trailing_zeros() as usize;
-            f &= f - 1;
-            next_layer |= NEIGHBOR_MASKS[c] & available & !reached;
-        }
-        reached |= next_layer;
-        frontier = next_layer;
-    }
-    reached.count_ones()
-}
+// --- SAW counting (frontier-state DP via the shared module) ---
 
 /// Count SAWs of exactly `remaining` more steps from `pos`, avoiding `visited`.
+/// `visited` should include `pos` (the snake convention) — we strip it before
+/// passing to the DP, which treats `pos` as the start cell rather than as a
+/// forbidden cell.
 fn count_extensions(pos: u8, visited: u64, remaining: usize) -> u64 {
-    match remaining {
-        0 => 1,
-        1 => (NEIGHBOR_MASKS[pos as usize] & !visited).count_ones() as u64,
-        2 => {
-            let mut total: u64 = 0;
-            let mut c1 = NEIGHBOR_MASKS[pos as usize] & !visited;
-            while c1 != 0 {
-                let n1 = c1.trailing_zeros() as usize;
-                c1 &= c1 - 1;
-                let v1 = visited | (1u64 << n1);
-                total += (NEIGHBOR_MASKS[n1] & !v1).count_ones() as u64;
-            }
-            total
-        }
-        3 => {
-            let mut total: u64 = 0;
-            let mut c1 = NEIGHBOR_MASKS[pos as usize] & !visited;
-            while c1 != 0 {
-                let n1 = c1.trailing_zeros() as usize;
-                c1 &= c1 - 1;
-                let v1 = visited | (1u64 << n1);
-                let mut c2 = NEIGHBOR_MASKS[n1] & !v1;
-                while c2 != 0 {
-                    let n2 = c2.trailing_zeros() as usize;
-                    c2 &= c2 - 1;
-                    let v2 = v1 | (1u64 << n2);
-                    total += (NEIGHBOR_MASKS[n2] & !v2).count_ones() as u64;
-                }
-            }
-            total
-        }
-        _ => {
-            // Cheap unvisited-cell-count prune.
-            if ((!visited).count_ones() as usize) < remaining + 1 {
-                return 0;
-            }
-            // Stronger reachability prune — only when the grid is dense enough
-            // that the BFS is likely to pay for itself.
-            if visited.count_ones() >= 20
-                && (reachable_count(pos, !visited) as usize) < remaining + 1
-            {
-                return 0;
-            }
-
-            let mut total: u64 = 0;
-            let mut cand = NEIGHBOR_MASKS[pos as usize] & !visited;
-            while cand != 0 {
-                let next = cand.trailing_zeros() as u8;
-                cand &= cand - 1;
-                total += count_extensions(next, visited | (1u64 << next), remaining - 1);
-            }
-            total
-        }
-    }
+    bitwise_games::saw_dp::count_saws(pos, remaining, visited & !(1u64 << pos))
 }
 
 // --- Cumulative count table per head ---
