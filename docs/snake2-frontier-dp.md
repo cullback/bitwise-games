@@ -118,9 +118,70 @@ Inverse: walk the path, sum counts of "earlier" candidate moves.
 
 ### Phase 3: Correct transitions
 
-- Implement the path-edge decision logic (which neighbors connect)
-- Handle arc creation, extension, merging
-- Validate against naive on 4×4 grid, lengths up to 10
+Subdivided into incremental commits, each gated by `validate`:
+
+#### Phase 3a ✅ — green baseline
+
+`Dp::count` delegates to the naive oracle. `validate` passes 320/320. No
+speedup yet — the value is having a green build to refactor from.
+
+#### Phase 3b — frontier state machinery
+
+Implement the state representation and transition framework, _without_
+correctness yet (returns naive). Pieces:
+
+1. `Frontier` storage: `slots: [Slot; 8]` + a separate `h: Slot` for the
+   horizontal connection from the previously-processed cell.
+2. State canonicalization: relabel `Arc(id)` ids by left-to-right first
+   appearance so equivalent matchings hash equal.
+3. `Frontier` → packed `u32` key suitable for use as a HashMap key.
+
+This commit just adds plumbing; `count` still calls naive.
+
+#### Phase 3c — empty-grid count (start cell handling)
+
+Implement the DP for `count(start_cell, L)` ignoring the `visited` mask.
+Process cells in row-major order. At each cell `(r, c)`:
+
+- **Read inputs**: `left = state.h`, `up = state.slot[c]`.
+- **Enumerate decisions** for `(right, down)` ∈ {0, 1}² where edge values
+  are 0 (not on path) or "becomes a new open end" (1).
+- **Compute degree**: `deg = left + up + right + down`. Must be 0, 1, or 2.
+- **Update state**:
+  - `deg == 0`: cell not on path. `new_h = Empty`, `new_slot[c] = Empty`.
+    `left` and `up` must already have been `Empty` (else invariant broken).
+  - `deg == 1`: cell is a path endpoint. Exactly one outgoing edge becomes
+    a new `Free` or `Arc` slot. Special rule: if this cell _is_ the start
+    cell, it must be `Free` (the start endpoint). Otherwise, if a `Free`
+    already exists in the state, this cell extends an existing endpoint —
+    promote `Free` to closed only if it's the path's other end.
+  - `deg == 2`: cell is path interior. Connects two open ends:
+    - Two `Arc(i)` and `Arc(j)`: merge — relabel one id to the other.
+      Caution: cycle if `i == j`; reject (we want a path, not a cycle).
+    - `Free` and `Arc(i)`: free end extends; the Arc's other end becomes
+      the new Free.
+    - Two `Free`: closes the path. Only valid if total path edges equals
+      `target_length` exactly _at this cell_; otherwise reject.
+- **Edge accounting**: each chosen `right`/`down` of value 1 increments
+  the running edge count.
+
+After processing all 64 cells: count states where total edges = L _and_
+the final state has exactly one path component with two endpoints
+(start + somewhere). Sum those.
+
+Validate against naive at L ∈ {1, 2, 3, 4} on 8×8.
+
+#### Phase 3d — `visited` mask support
+
+Extend `count_avoiding(current, visited, remaining)`. Treat cells in
+`visited` as forbidden (degree must be 0 there). Initial frontier state
+reflects `current` rather than the original start. Validate.
+
+#### Phase 3e — verify final
+
+- Validate matches naive for all (start, length) with L ≤ 10
+- Spot-check c_8(corner) against `saw_count` output
+- Time per-query DP; if too slow, profile transition tables
 
 ### Phase 4: 8×8 scale-up + table emission
 

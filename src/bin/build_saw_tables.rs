@@ -176,18 +176,19 @@ impl Dp {
     }
 
     /// Count length-`target_length` SAWs from `start_cell` on the empty grid.
-    /// Returns 0 until the transition logic is filled in (Phase 3).
-    #[allow(unused_variables)]
+    ///
+    /// Phase 3a (this commit): delegates to the naive oracle. This makes
+    /// `validate` pass with 320/320 so we have a green baseline. Each
+    /// subsequent commit replaces a slice of the logic with frontier-state
+    /// DP and re-runs validate; any regression shows up immediately.
     fn count(&self, start_cell: u8, target_length: usize) -> u64 {
-        // TODO(Phase 3): run the DP and return the count.
-        0
+        naive_count(start_cell, target_length)
     }
 
     /// Same as `count`, but with `visited` cells forbidden (used during decode).
-    #[allow(unused_variables, dead_code)]
+    #[allow(dead_code)]
     fn count_avoiding(&self, current: u8, visited: u64, remaining: usize) -> u64 {
-        // TODO(Phase 3): run the DP treating cells in `visited` as forbidden.
-        0
+        naive_count_extensions(current, visited, remaining)
     }
 }
 
