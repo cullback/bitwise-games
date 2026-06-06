@@ -55,6 +55,7 @@ use bitwise_games::{Game, Key};
 mod saw_dp;
 mod saw_rank;
 mod saw_tables;
+mod zdd;
 
 use std::sync::OnceLock;
 
