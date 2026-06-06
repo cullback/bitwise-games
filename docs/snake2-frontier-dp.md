@@ -138,9 +138,29 @@ Deferred: bit-packed integer key for the HashMap (premature; `Frontier`
 derives `Hash` so it's usable as a key directly; we'll measure DP hot
 path and pack only if needed).
 
-#### Phase 3c — empty-grid count (start cell handling)
+#### Phase 3c (in progress) — empty-grid count
 
-Implement the DP for `count(start_cell, L)` ignoring the `visited` mask.
+First implementation of frontier-DP transitions in
+`src/bin/build_saw_tables.rs`. Status from `validate`:
+
+- L=0: 64/64 pass
+- L=1: 64/64 pass
+- L=2: 64/64 pass
+- L=3: 8/64 pass (only row-0 starts; row 1+ undercount by 1–2)
+- L=4: 2/64 pass
+
+The undercount pattern (always negative, symmetric around c=3,4) suggests
+the missing configurations involve paths whose **start cell is not in
+row 0** AND whose row-0 traversal builds an arc that has to merge with
+the start cell's strand. The transition cases that involve closing an
+Arc into a Free (when the start consumes an arc end) are the suspect.
+
+Next session debugging plan: instrument `frontier_dp_count` to emit
+each accepted completion (start cell, edge set), enumerate naive SAWs
+of the failing case, diff them, and read off which configuration the
+DP rejected — that will pinpoint which transition case to fix.
+
+Implementation outline (now in the binary):
 Process cells in row-major order. At each cell `(r, c)`:
 
 - **Read inputs**: `left = state.h`, `up = state.slot[c]`.

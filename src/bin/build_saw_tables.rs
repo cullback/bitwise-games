@@ -133,6 +133,12 @@ impl fmt::Debug for Slot {
 struct Frontier {
     slots: [Slot; GRID_W],
     h: Slot,
+    /// Number of fully-closed path components built so far. For a SAW we
+    /// require exactly 1 at the end. During DP this gets incremented when
+    /// two `Free` ends merge at a cell (closing a strand with 2 placed
+    /// endpoints); any cell that would *start* a new strand after one has
+    /// already closed is rejected by the transition.
+    closed: u8,
 }
 
 impl Frontier {
@@ -140,6 +146,7 @@ impl Frontier {
         Frontier {
             slots: [Slot::Empty; GRID_W],
             h: Slot::Empty,
+            closed: 0,
         }
     }
 
@@ -161,16 +168,18 @@ impl Frontier {
     #[allow(dead_code)]
     fn canonical(&self) -> Self {
         let mut next_id: u8 = 0;
-        let mut mapping: [Option<u8>; 16] = [None; 16];
+        // Arc ids can grow across the DP without bound (they only get
+        // small after canonicalization). Use a HashMap-style sparse mapping
+        // via a Vec to be safe for any incoming id.
+        let mut mapping: Vec<(u8, u8)> = Vec::new();
         let mut relabel = |slot: Slot| -> Slot {
             match slot {
                 Slot::Arc(id) => {
-                    let idx = id as usize;
-                    if let Some(new) = mapping[idx] {
+                    if let Some(&(_, new)) = mapping.iter().find(|&&(orig, _)| orig == id) {
                         Slot::Arc(new)
                     } else {
                         let new = next_id;
-                        mapping[idx] = Some(new);
+                        mapping.push((id, new));
                         next_id += 1;
                         Slot::Arc(new)
                     }
@@ -186,6 +195,7 @@ impl Frontier {
         Frontier {
             slots: new_slots,
             h: new_h,
+            closed: self.closed,
         }
     }
 }
@@ -225,20 +235,334 @@ impl Dp {
     }
 
     /// Count length-`target_length` SAWs from `start_cell` on the empty grid.
-    ///
-    /// Phase 3a (this commit): delegates to the naive oracle. This makes
-    /// `validate` pass with 320/320 so we have a green baseline. Each
-    /// subsequent commit replaces a slice of the logic with frontier-state
-    /// DP and re-runs validate; any regression shows up immediately.
     fn count(&self, start_cell: u8, target_length: usize) -> u64 {
-        naive_count(start_cell, target_length)
+        frontier_dp_count(start_cell, target_length, 0)
     }
 
     /// Same as `count`, but with `visited` cells forbidden (used during decode).
     #[allow(dead_code)]
     fn count_avoiding(&self, current: u8, visited: u64, remaining: usize) -> u64 {
-        naive_count_extensions(current, visited, remaining)
+        frontier_dp_count(current, remaining, visited & !(1u64 << current))
     }
+}
+
+// --- Frontier DP for SAW counting ---
+//
+// Process cells in row-major order. For each cell at (r, c) we decide the
+// status of its "outgoing" edges (right into (r, c+1), down into (r+1, c)).
+// The cell's "incoming" edges (left from h, up from slots[c]) were decided
+// when the previous cells in the same row / row above were processed.
+//
+// Cell degree d = left + up + right + down. Constraint: d ∈ {0, 1, 2} (no
+// path vertex has 3+ incident edges in a SAW). For the start cell, d = 1
+// (it's a path endpoint). For forbidden cells, d = 0.
+//
+// We track total path edges (= SAW length). The final answer is the sum
+// over states with edges == target_length and a valid completion state
+// (all slots Empty, h Empty, exactly one closed path component built).
+
+/// Apply transition for processing cell at column `c`. Returns `None` for
+/// invalid combinations, or `Some(new_state)` for the resulting frontier.
+///
+/// `next_arc_id` is a counter passed by reference; if a new arc is created
+/// here, it's incremented. Final state is canonicalized by the caller.
+fn transition(
+    state: &Frontier,
+    c: usize,
+    is_start: bool,
+    is_forbidden: bool,
+    right: bool,
+    down: bool,
+    next_arc_id: &mut u8,
+) -> Option<Frontier> {
+    let left = !matches!(state.h, Slot::Empty);
+    let up = !matches!(state.slots[c], Slot::Empty);
+    let deg = (left as usize) + (up as usize) + (right as usize) + (down as usize);
+
+    if is_forbidden {
+        if deg != 0 {
+            return None;
+        }
+        // Cell skipped; h and slot[c] both Empty as required.
+        let mut new_state = state.clone();
+        new_state.h = Slot::Empty;
+        new_state.slots[c] = Slot::Empty;
+        return Some(new_state);
+    }
+
+    if is_start {
+        if deg != 1 {
+            return None;
+        }
+    } else if deg > 2 {
+        return None;
+    }
+
+    // Closed-path lockout: once any strand has fully closed, additional path
+    // edges would create a second component. Reject deg > 0 in that case.
+    if state.closed >= 1 && deg > 0 {
+        return None;
+    }
+
+    let mut new_state = state.clone();
+
+    match deg {
+        0 => {
+            // Cell not on path. left and up must have been Empty (else we'd
+            // be dropping an open strand).
+            new_state.h = Slot::Empty;
+            new_state.slots[c] = Slot::Empty;
+            Some(new_state)
+        }
+        1 => {
+            // Cell is an endpoint of the path: exactly one incident edge.
+            match (left, up, right, down) {
+                (true, false, false, false) => {
+                    // Left edge only: cell terminates the h strand.
+                    let closed_strand = close_strand_endpoint(&mut new_state, state.h);
+                    new_state.h = Slot::Empty;
+                    new_state.slots[c] = Slot::Empty;
+                    if closed_strand {
+                        new_state.closed = new_state.closed.saturating_add(1);
+                    }
+                    Some(new_state)
+                }
+                (false, true, false, false) => {
+                    // Up edge only: cell terminates the slot[c] strand.
+                    let closed_strand = close_strand_endpoint(&mut new_state, state.slots[c]);
+                    new_state.h = Slot::Empty;
+                    new_state.slots[c] = Slot::Empty;
+                    if closed_strand {
+                        new_state.closed = new_state.closed.saturating_add(1);
+                    }
+                    Some(new_state)
+                }
+                (false, false, true, false) => {
+                    // Right edge only: cell is endpoint of new strand (or
+                    // the start cell laying its first edge). Outgoing edge
+                    // is a Free (this strand has 1 endpoint = this cell,
+                    // and 1 open end going forward).
+                    new_state.h = Slot::Free;
+                    new_state.slots[c] = Slot::Empty;
+                    Some(new_state)
+                }
+                (false, false, false, true) => {
+                    // Down edge only: same idea.
+                    new_state.h = Slot::Empty;
+                    new_state.slots[c] = Slot::Free;
+                    Some(new_state)
+                }
+                _ => None, // impossible: deg=1 means exactly one is true
+            }
+        }
+        2 => {
+            // Cell is interior: two incident edges. The cell connects two
+            // path strands (or extends one). Several subcases by which two.
+            match (left, up, right, down) {
+                (true, true, false, false) => {
+                    // Both incoming: merge h and slot[c] strands at this cell.
+                    let closed_strand = merge_strands(&mut new_state, state.h, state.slots[c], c)?;
+                    new_state.h = Slot::Empty;
+                    new_state.slots[c] = Slot::Empty;
+                    if closed_strand {
+                        new_state.closed = new_state.closed.saturating_add(1);
+                    }
+                    Some(new_state)
+                }
+                (true, false, true, false) => {
+                    // Left + right: strand passes straight through. h's slot
+                    // moves to the new h.
+                    new_state.h = state.h;
+                    new_state.slots[c] = Slot::Empty;
+                    Some(new_state)
+                }
+                (true, false, false, true) => {
+                    // Left + down: strand turns. h's slot moves to slot[c].
+                    new_state.h = Slot::Empty;
+                    new_state.slots[c] = state.h;
+                    Some(new_state)
+                }
+                (false, true, true, false) => {
+                    // Up + right: strand turns.
+                    new_state.h = state.slots[c];
+                    new_state.slots[c] = Slot::Empty;
+                    Some(new_state)
+                }
+                (false, true, false, true) => {
+                    // Up + down: strand passes straight through.
+                    new_state.h = Slot::Empty;
+                    new_state.slots[c] = state.slots[c];
+                    Some(new_state)
+                }
+                (false, false, true, true) => {
+                    // Right + down: cell starts a new arc whose two open
+                    // ends are right and down. Assign a fresh Arc id.
+                    let id = *next_arc_id;
+                    *next_arc_id += 1;
+                    new_state.h = Slot::Arc(id);
+                    new_state.slots[c] = Slot::Arc(id);
+                    Some(new_state)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Cell has degree 1 with the only incident edge being one already in the
+/// state (either h or one of the slots). The strand whose open end was at
+/// this edge terminates at this cell (the cell becomes the strand's second
+/// endpoint).
+///
+/// Returns `true` if this closes a strand (the input was `Free`), `false`
+/// if it just shifts an Arc's other end to `Free`.
+fn close_strand_endpoint(state: &mut Frontier, slot: Slot) -> bool {
+    match slot {
+        Slot::Free => true,
+        Slot::Arc(id) => {
+            for s in state.slots.iter_mut() {
+                if matches!(s, Slot::Arc(i) if *i == id) {
+                    *s = Slot::Free;
+                    return false;
+                }
+            }
+            if matches!(state.h, Slot::Arc(i) if i == id) {
+                state.h = Slot::Free;
+            }
+            false
+        }
+        Slot::Empty => false,
+    }
+}
+
+/// Merge two strands at a cell where both incoming edges (h and slot[c])
+/// terminate. Returns Some(closed_strand) where `closed_strand` is true iff
+/// the merge closes a path (two Frees meeting). Returns None for cycles.
+fn merge_strands(state: &mut Frontier, a: Slot, b: Slot, _c: usize) -> Option<bool> {
+    match (a, b) {
+        (Slot::Free, Slot::Free) => {
+            // Two free strands meet: combined strand has 2 placed endpoints.
+            // The path closes here.
+            Some(true)
+        }
+        (Slot::Free, Slot::Arc(id)) | (Slot::Arc(id), Slot::Free) => {
+            // Free strand merges with arc strand. The arc's other end
+            // becomes the Free of the merged strand.
+            for s in state.slots.iter_mut() {
+                if matches!(s, Slot::Arc(i) if *i == id) {
+                    *s = Slot::Free;
+                    return Some(false);
+                }
+            }
+            if matches!(state.h, Slot::Arc(i) if i == id) {
+                state.h = Slot::Free;
+                return Some(false);
+            }
+            None
+        }
+        (Slot::Arc(i), Slot::Arc(j)) if i == j => None, // cycle
+        (Slot::Arc(i), Slot::Arc(j)) => {
+            // Different arc ids: relabel j → i.
+            for s in state.slots.iter_mut() {
+                if matches!(s, Slot::Arc(k) if *k == j) {
+                    *s = Slot::Arc(i);
+                }
+            }
+            if matches!(state.h, Slot::Arc(k) if k == j) {
+                state.h = Slot::Arc(i);
+            }
+            Some(false)
+        }
+        _ => None,
+    }
+}
+
+/// Count length-`target_length` SAWs starting from `start_cell` on the 8×8
+/// grid, with cells in `forbidden` excluded from the path.
+fn frontier_dp_count(start_cell: u8, target_length: usize, forbidden: u64) -> u64 {
+    // Length 0 special case: just the start cell, no path edges. Always 1
+    // (as long as the start isn't forbidden).
+    if target_length == 0 {
+        return if (forbidden >> start_cell) & 1 == 0 {
+            1
+        } else {
+            0
+        };
+    }
+
+    let start_r = (start_cell / 8) as usize;
+    let start_c = (start_cell % 8) as usize;
+
+    // dp: (canonicalized frontier, total edges) -> count
+    use std::collections::HashMap;
+    let mut dp: HashMap<(Frontier, usize), u64> = HashMap::new();
+    dp.insert((Frontier::empty(), 0), 1);
+
+    let mut next_arc_id: u8 = 0;
+
+    for r in 0..GRID_H {
+        for c in 0..GRID_W {
+            let is_start = r == start_r && c == start_c;
+            let is_forbidden = (forbidden >> (r * 8 + c)) & 1 != 0;
+            let mut next: HashMap<(Frontier, usize), u64> = HashMap::new();
+
+            let right_ok = c < GRID_W - 1;
+            let down_ok = r < GRID_H - 1;
+
+            for ((state, edges), &count) in &dp {
+                for right in [false, true] {
+                    if right && !right_ok {
+                        continue;
+                    }
+                    for down in [false, true] {
+                        if down && !down_ok {
+                            continue;
+                        }
+                        let new_edges = edges + (right as usize) + (down as usize);
+                        if new_edges > target_length {
+                            continue;
+                        }
+                        let mut local_arc = next_arc_id;
+                        if let Some(new_state) = transition(
+                            state,
+                            c,
+                            is_start,
+                            is_forbidden,
+                            right,
+                            down,
+                            &mut local_arc,
+                        ) {
+                            let canonical = new_state.canonical();
+                            *next.entry((canonical, new_edges)).or_insert(0) += count;
+                            if local_arc > next_arc_id {
+                                next_arc_id = local_arc;
+                            }
+                        }
+                    }
+                }
+            }
+
+            dp = next;
+        }
+    }
+
+    // Final aggregation: states with edges == target_length, no open ends,
+    // and exactly one closed path component (= a SAW).
+    let mut total = 0u64;
+    for ((state, edges), count) in &dp {
+        if *edges != target_length {
+            continue;
+        }
+        if state.open_count() != 0 {
+            continue;
+        }
+        if state.closed != 1 {
+            continue;
+        }
+        total += count;
+    }
+    total
 }
 
 // --- CLI ---
@@ -370,7 +694,11 @@ mod tests {
     use super::*;
 
     fn fr(slots: [Slot; GRID_W], h: Slot) -> Frontier {
-        Frontier { slots, h }
+        Frontier {
+            slots,
+            h,
+            closed: 0,
+        }
     }
 
     #[test]
@@ -510,6 +838,8 @@ fn validate_dp_against_naive() {
     let max_l = 4;
     let mut total = 0usize;
     let mut failures = Vec::new();
+    let mut per_l_total = vec![0usize; max_l + 1];
+    let mut per_l_fail = vec![0usize; max_l + 1];
 
     for l in 0..=max_l {
         for r in 0..GRID_H {
@@ -518,8 +848,10 @@ fn validate_dp_against_naive() {
                 let got = dp.count(start, l);
                 let want = naive_count(start, l);
                 total += 1;
+                per_l_total[l] += 1;
                 if got != want {
                     failures.push((r, c, l, got, want));
+                    per_l_fail[l] += 1;
                 }
             }
         }
@@ -530,17 +862,21 @@ fn validate_dp_against_naive() {
         return;
     }
 
+    println!("validate: per-length results");
+    for l in 0..=max_l {
+        let pass = per_l_total[l] - per_l_fail[l];
+        println!("  L={l}: {pass}/{} pass", per_l_total[l]);
+    }
     eprintln!(
-        "validate: {}/{} cases failed (Phase 3 not complete).",
+        "validate: {}/{} cases failed overall (Phase 3 transitions in progress).",
         failures.len(),
         total
     );
-    // Show only the first few to keep output readable.
-    for &(r, c, l, got, want) in failures.iter().take(5) {
+    for &(r, c, l, got, want) in failures.iter().take(8) {
         eprintln!("  start=({r},{c}) L={l}: dp={got} naive={want}");
     }
-    if failures.len() > 5 {
-        eprintln!("  ... ({} more)", failures.len() - 5);
+    if failures.len() > 8 {
+        eprintln!("  ... ({} more)", failures.len() - 8);
     }
     std::process::exit(1);
 }
