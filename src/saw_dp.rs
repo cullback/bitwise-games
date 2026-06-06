@@ -52,19 +52,25 @@ impl Frontier {
     }
 
     fn canonical(&self) -> Self {
+        // Max distinct arc ids in a valid frontier is bounded by the number
+        // of arc pairs, which is ≤ GRID_W / 2 = 4. Use a stack array — heap
+        // allocation here was hot enough to dominate the DP runtime.
         let mut next_id: u8 = 0;
-        let mut mapping: Vec<(u8, u8)> = Vec::new();
+        let mut mapping: [(u8, u8); 8] = [(0, 0); 8];
+        let mut mapping_len = 0usize;
         let mut relabel = |slot: Slot| -> Slot {
             match slot {
                 Slot::Arc(id) => {
-                    if let Some(&(_, new)) = mapping.iter().find(|&&(orig, _)| orig == id) {
-                        Slot::Arc(new)
-                    } else {
-                        let new = next_id;
-                        mapping.push((id, new));
-                        next_id += 1;
-                        Slot::Arc(new)
+                    for &(orig, new) in &mapping[..mapping_len] {
+                        if orig == id {
+                            return Slot::Arc(new);
+                        }
                     }
+                    let new = next_id;
+                    mapping[mapping_len] = (id, new);
+                    mapping_len += 1;
+                    next_id += 1;
+                    Slot::Arc(new)
                 }
                 other => other,
             }
