@@ -358,7 +358,7 @@ impl Game for WolfGame {
     const NAME: &'static str = "Wolfenstein";
     const FPS: usize = 30;
 
-    fn new(_args: Vec<String>) -> (u64, FrameBuffer) {
+    fn init(_args: Vec<String>) -> (u64, FrameBuffer) {
         let s = fresh();
         (encode(&s), render(&s))
     }

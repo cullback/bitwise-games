@@ -110,7 +110,7 @@ impl Game for DoomGame {
     const NAME: &'static str = "Doom";
     const FPS: usize = 30;
 
-    fn new(_args: Vec<String>) -> (u64, FrameBuffer) {
+    fn init(_args: Vec<String>) -> (u64, FrameBuffer) {
         let s = fresh();
         (encode(&s), render::render(&s))
     }

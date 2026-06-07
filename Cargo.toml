@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+rancor = { path = "../rancor" }
 rustc-hash = "2"
 tungstenite = "0.24"

@@ -1,49 +1,22 @@
 /*
 
-Snake on an 8×8 grid (variant 2: SAW-rank encoding, proof of concept).
+Snake on a 9×8 grid, with the whole game state packed into one u64.
 
-# Idea
+The snake's body is a directed self-avoiding walk (head → tail). We rank that
+walk with `rancor::saw` and store the integer; the apple rides in the low bits.
 
-Encode the snake's body as a *rank* in the space of self-avoiding walks (SAWs)
-on the grid. Each (head_cell, body_length, body_shape) triple gets exactly one
-integer in [0, cum[head][MAX_LEN]); decoding navigates the count tree of valid
-SAW extensions step by step.
+| Field      | Bits | Description                                              |
+|------------|------|----------------------------------------------------------|
+| apple_bits | 3    | apple entropy; the value 7 doubles as the "dead" marker  |
+| body rank  | ~57  | rancor::saw rank of the head→tail walk (any length ≥ 1)  |
 
-Direction is implicit — head facing = direction(body[0] → head). No bits spent
-on a direction field.
+Layout (low → high): apple_bits | body rank. The board has 72 cells, so the
+full SAW count (~9.3×10¹⁶ ≈ 2^56.4) plus 3 apple bits fits a u64 with room to
+spare — the snake can grow to fill the entire board, no length cap.
 
-# Encoding
-
-| Field      | Bits | Description                                       |
-|------------|------|---------------------------------------------------|
-| apple_bits | 3    | apple entropy (same scheme as snake.rs)           |
-| head cell  | 6    | row*8 + col                                       |
-| body rank  | 55   | rank in [0, cum[head][MAX_LEN]) for alive states; |
-|            |      | ≥ cum[head][MAX_LEN] for the DEAD sentinel        |
-
-Layout (low → high): apple_bits | head | body rank.
-
-# Status
-
-Proof of concept. `count_extensions` is backtracking with three optimizations:
-inlined base cases (remaining = 0..3), an early "unvisited cells fewer than
-remaining" prune, and a reachability BFS prune that triggers once the grid
-is dense enough to make BFS pay off. `cum_table` initialization is
-parallelized via `thread::scope` (one thread per starting cell — natural
-load balancing since corners finish quickly and the OS schedules the heavy
-center cells across cores).
-
-With those, MAX_LEN = 22 fits comfortably in the 5 FPS frame budget (decode
-≈ 65 ms worst-case on a tight zigzag). Cum-table init ≈ 3.5 s on first call.
-
-To push MAX_LEN past ~22 within budget would require a transfer-matrix
-based count function (frontier-state matchings on a column scan-line). The
-encoding scheme itself supports MAX_LEN well past 50 — it's the count
-function that's the bottleneck, not the bit math.
-
-Max snake length here: 23 (head + 22 body cells). Max score: 21. Below
-the current snake.rs ceiling of 33 — the SAW-rank scheme has more
-theoretical headroom but needs faster counts to claim it.
+`rancor::saw::Saw<9, 8>` builds its ranking table once (~70 ms) on first use;
+every rank/unrank after that is microseconds, far inside the 5 FPS budget.
+Direction is implicit — head facing = direction(body[0] → head), no bits spent.
 
 */
 use bitwise_games::draw_command::{BLACK, Color, DARK_BLUE, DrawCommand, GREEN, RED, WHITE};
@@ -51,12 +24,7 @@ use bitwise_games::font::{digits_of, draw_text, text_width};
 use bitwise_games::frame_buffer::FrameBuffer;
 use bitwise_games::rng;
 use bitwise_games::{Game, Key};
-
-mod saw_dp;
-mod saw_rank;
-mod saw_tables;
-mod zdd;
-
+use rancor::saw::Saw;
 use std::sync::OnceLock;
 
 // --- Board / display ---
@@ -74,6 +42,8 @@ use std::sync::OnceLock;
 
 const BOARD_W: u32 = 9;
 const BOARD_H: u32 = 8;
+const COLS: usize = BOARD_W as usize;
+const ROWS: usize = BOARD_H as usize;
 const DISPLAY_PX: u32 = 128;
 const CELL_PX: u32 = 14;
 const SCORE_H: u32 = 14;
@@ -84,11 +54,9 @@ const GAME_Y: u32 = SCORE_H + 1;
 const FONT_SCALE: u32 = 2;
 const BANNER_SCALE: u32 = 2;
 
-// Maximum body length (cells beyond head). Snake total length = MAX_LEN + 1.
-// We use the polynomial `saw_dp` counter for in-path conditional counts and
-// const-baked cumulative tables for the length/start peel, so MAX_LEN can be
-// the full Hamiltonian (W*H − 1) without exponential build or runtime cost.
-const MAX_LEN: usize = saw_tables::MAX_LENGTH;
+// Maximum body length (cells beyond head). Snake total = MAX_LEN + 1 = full
+// board, since the whole SAW-rank space fits a u64 — no count-driven cap.
+const MAX_LEN: usize = COLS * ROWS - 1;
 
 // --- Directions (absolute) ---
 
@@ -135,127 +103,38 @@ fn direction_between(from: u8, to: u8) -> Option<u8> {
     }
 }
 
-// --- SAW rank/unrank ---
+// --- SAW rank/unrank (via rancor) ---
 //
-// Ordering is (length, start_cell, lex-of-next-choices) so length and head
-// are recoverable from the rank — no separate fields needed.
-//
-//   - Cumulative tables (`saw_tables::CUM_LENGTHS` and `CUM_PER_START`) are
-//     precomputed and baked in as `const`, so startup is instant.
-//   - In-path conditional counts during encode/decode use the polynomial
-//     frontier DP (`saw_dp::count_saws_for::<W, H>`) — sub-millisecond per
-//     query at any length, including the full Hamiltonian.
+// The body is a directed self-avoiding walk; `rancor::saw` is a bijection
+// between such walks and `0..count`. The diagram-order rank isn't sorted by
+// length, but we don't need it to be — the rank is an opaque handle, and
+// decoding recovers the full body (head, length, and shape) directly.
 
-const N_CELLS_USIZE: usize = (BOARD_W * BOARD_H) as usize;
-
-fn count_extensions(start: u8, forbidden: u128, remaining: usize) -> u64 {
-    if remaining == 0 {
-        return 1;
-    }
-    saw_dp::count_saws_for::<{ BOARD_W as usize }, { BOARD_H as usize }>(
-        start, remaining, forbidden,
-    )
+/// The walk-ranking table for this board, built once on first use (~70 ms).
+fn saw() -> &'static Saw<COLS, ROWS> {
+    static SAW: OnceLock<Saw<COLS, ROWS>> = OnceLock::new();
+    SAW.get_or_init(Saw::new)
 }
 
-fn neighbors_of(cell: u8) -> impl Iterator<Item = u8> {
-    let w = BOARD_W as i32;
-    let h = BOARD_H as i32;
-    let r = (cell as i32) / w;
-    let c = (cell as i32) % w;
-    let mut out = [None, None, None, None];
-    if r > 0 {
-        out[0] = Some((cell as i32 - w) as u8);
-    }
-    if c > 0 {
-        out[1] = Some(cell - 1);
-    }
-    if c + 1 < w {
-        out[2] = Some(cell + 1);
-    }
-    if r + 1 < h {
-        out[3] = Some((cell as i32 + w) as u8);
-    }
-    out.into_iter().flatten()
+fn to_coords(cells: &[u8]) -> Vec<(usize, usize)> {
+    cells
+        .iter()
+        .map(|&c| (c as usize / COLS, c as usize % COLS))
+        .collect()
 }
 
-fn rank_of_path(path: &[u8]) -> u64 {
-    let length = path.len() - 1;
-    let start = path[0] as usize;
-    let mut rank = saw_tables::CUM_LENGTHS[length];
-    for s in 0..start {
-        rank += saw_tables::CUM_PER_START[s][length];
-    }
-    let mut visited: u128 = 1u128 << start;
-    let mut current = path[0];
-    for step in 1..=length {
-        let actual = path[step];
-        for next in neighbors_of(current) {
-            if (visited >> next) & 1 != 0 {
-                continue;
-            }
-            if next == actual {
-                break;
-            }
-            rank += count_extensions(next, visited, length - step);
-        }
-        visited |= 1u128 << actual;
-        current = actual;
-    }
-    rank
-}
-
-fn path_at_rank(mut rank: u64) -> Vec<u8> {
-    // Peel length.
-    let mut length = 0;
-    while length < MAX_LEN && rank >= saw_tables::CUM_LENGTHS[length + 1] {
-        length += 1;
-    }
-    rank -= saw_tables::CUM_LENGTHS[length];
-
-    // Peel start.
-    let mut start = 0;
-    while start < N_CELLS_USIZE && rank >= saw_tables::CUM_PER_START[start][length] {
-        rank -= saw_tables::CUM_PER_START[start][length];
-        start += 1;
-    }
-
-    // Walk the path.
-    let mut path = Vec::with_capacity(length + 1);
-    path.push(start as u8);
-    let mut visited: u128 = 1u128 << start;
-    let mut current = start as u8;
-    let mut remaining = length;
-    while remaining > 0 {
-        let mut picked = None;
-        for next in neighbors_of(current) {
-            if (visited >> next) & 1 != 0 {
-                continue;
-            }
-            let sub_count = count_extensions(next, visited, remaining - 1);
-            if rank < sub_count {
-                picked = Some(next);
-                break;
-            }
-            rank -= sub_count;
-        }
-        let next = picked.expect("decode exhausted");
-        path.push(next);
-        visited |= 1u128 << next;
-        current = next;
-        remaining -= 1;
-    }
-    path
+fn from_coords(coords: &[(usize, usize)]) -> Vec<u8> {
+    coords.iter().map(|&(r, c)| (r * COLS + c) as u8).collect()
 }
 
 // --- State ---
 //
 // Packed `u64`:
-//   bits 0..APPLE_BITS — apple_bits
-//   bits APPLE_BITS..  — rank
+//   bits 0..APPLE_BITS — apple_bits (7 == dead sentinel)
+//   bits APPLE_BITS..  — body rank
 //
-// `apple_bits == DEAD_APPLE_BITS` (7) signals a dead snake; the rank field
-// then holds the head cell index (where to draw the corpse). Live states
-// use apple_bits ∈ 0..7 (seven candidates for the apple-cell hash).
+// A dead snake keeps its full body (so the corpse stays on screen); only the
+// apple-bits slot changes, to the DEAD sentinel.
 
 const APPLE_BITS: u32 = 3;
 const APPLE_MASK: u64 = (1u64 << APPLE_BITS) - 1;
@@ -264,8 +143,8 @@ const APPLE_CANDIDATES: u8 = 7;
 
 struct State {
     apple_bits: u8,
-    /// Snake cells in head→tail order. cells[0] is the head.
-    /// Alive: len ≥ 2. Dead: len = 1 (just the head; body collapsed away).
+    /// Snake cells in head→tail order; `cells[0]` is the head. Always ≥ 2 cells
+    /// (the spawn length); a dead snake keeps its full body for the corpse.
     cells: Vec<u8>,
     dead: bool,
 }
@@ -293,10 +172,9 @@ impl State {
 // --- Encoding ---
 
 fn encode(state: &State) -> u64 {
-    // Dead and alive states use the same `rank_of_path` encoding; the only
-    // difference is that the apple-bits slot holds the DEAD sentinel for a
-    // dead snake. This way the corpse body stays on screen.
-    let rank = rank_of_path(&state.cells);
+    // Alive and dead use the same walk encoding; a dead snake just stores the
+    // DEAD sentinel in the apple slot so the corpse body survives the round-trip.
+    let rank = saw().rank(&to_coords(&state.cells));
     let apple = if state.dead {
         DEAD_APPLE_BITS
     } else {
@@ -305,10 +183,9 @@ fn encode(state: &State) -> u64 {
     (rank << APPLE_BITS) | (apple as u64 & APPLE_MASK)
 }
 
-fn decode(state: u64) -> State {
-    let apple_bits = (state & APPLE_MASK) as u8;
-    let rank = state >> APPLE_BITS;
-    let cells = path_at_rank(rank);
+fn decode(packed: u64) -> State {
+    let apple_bits = (packed & APPLE_MASK) as u8;
+    let cells = from_coords(&saw().unrank(packed >> APPLE_BITS));
     State {
         apple_bits,
         cells,
@@ -522,8 +399,6 @@ fn render(state: &State) -> FrameBuffer {
 
     // Score = apples eaten = body_len − 1 (the starting body length is 1).
     // Always drawn so the final score stays visible on the death screen.
-    // Score in the 14 px top zone. FONT_SCALE=2 glyphs are 6×10, so y=2
-    // centers them vertically (2 px above, 2 px below).
     let score = (state.body_len() as u32).saturating_sub(1);
     draw_number(&mut commands, score, 4, 2);
 
@@ -635,7 +510,7 @@ impl Game for Snake2 {
     const NAME: &'static str = "Snake2";
     const FPS: usize = 5;
 
-    fn new(args: Vec<String>) -> (u64, FrameBuffer) {
+    fn init(args: Vec<String>) -> (u64, FrameBuffer) {
         let seed = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
         let state = fresh_board(seed);
         (encode(&state), render(&state))
@@ -767,8 +642,7 @@ mod tests {
         ];
         for &(head, body0) in cases {
             let s = snake(vec![head, body0]);
-            let enc = encode(&s);
-            let d = decode(enc);
+            let d = decode(encode(&s));
             assert!(!d.dead);
             assert_eq!(d.cells, s.cells, "round-trip failed for {:?}", s.cells);
             assert_eq!(d.apple_bits, s.apple_bits);
@@ -795,8 +669,7 @@ mod tests {
         ];
         for cells in &cases {
             let s = snake(cells.clone());
-            let enc = encode(&s);
-            let d = decode(enc);
+            let d = decode(encode(&s));
             assert!(!d.dead);
             assert_eq!(&d.cells, cells, "round-trip failed for {cells:?}");
         }
@@ -804,17 +677,38 @@ mod tests {
 
     #[test]
     fn dead_round_trip() {
-        // The dead state ignores the input `apple_bits` — the encoding always
-        // sets it to `DEAD_APPLE_BITS` as the sentinel that marks "dead".
+        // A dead snake keeps its full body; `dead` rides on the apple-bits
+        // sentinel, which decode reports as DEAD_APPLE_BITS.
         let s = State {
             apple_bits: 3,
-            cells: vec![42],
+            cells: vec![cell(3, 3), cell(3, 2), cell(3, 1)],
             dead: true,
         };
-        let enc = encode(&s);
-        let d = decode(enc);
+        let d = decode(encode(&s));
         assert!(d.dead);
-        assert_eq!(d.cells, vec![42]);
+        assert_eq!(d.cells, s.cells);
         assert_eq!(d.apple_bits, DEAD_APPLE_BITS);
+    }
+
+    #[test]
+    fn full_board_hamiltonian_round_trips() {
+        // A boustrophedon (snaking) path covering all 72 cells — the longest
+        // possible body. Confirms the full SAW range round-trips and fits.
+        let mut cells = Vec::new();
+        for r in 0..BOARD_H {
+            if r % 2 == 0 {
+                for c in 0..BOARD_W {
+                    cells.push(cell(r, c));
+                }
+            } else {
+                for c in (0..BOARD_W).rev() {
+                    cells.push(cell(r, c));
+                }
+            }
+        }
+        assert_eq!(cells.len(), (BOARD_W * BOARD_H) as usize);
+        let s = snake(cells.clone());
+        let d = decode(encode(&s));
+        assert_eq!(d.cells, cells, "Hamiltonian path did not round-trip");
     }
 }

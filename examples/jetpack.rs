@@ -461,7 +461,7 @@ impl Game for JetpackGame {
     const NAME: &'static str = "Jetpack";
     const FPS: usize = 30;
 
-    fn new(args: Vec<String>) -> (u64, FrameBuffer) {
+    fn init(args: Vec<String>) -> (u64, FrameBuffer) {
         let seed = args.get(1).and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
         let state = fresh(seed);
         (encode(&state), render(&state, false))
@@ -493,7 +493,7 @@ impl Game for JetpackGame {
         // (effective 0.5 px/frame² without needing fractional vy).
         let frame_idx = state.camera_x / SCROLL_PX_PER_FRAME;
         let mut vy = state.vy;
-        if frame_idx % 2 == 0 {
+        if frame_idx.is_multiple_of(2) {
             vy += GRAVITY;
         }
         if z_held {
@@ -518,12 +518,12 @@ impl Game for JetpackGame {
         // path takes over next tick.
         let (lo, hi) = visible_chunk_range(state.camera_x);
         for chunk_id in lo..=hi {
-            if let Some(z) = zapper_for_chunk(state.seed, chunk_id) {
-                if zapper_hits_barry(&z, state.barry_y, state.camera_x) {
-                    state.dead = true;
-                    state.death_anim = 0;
-                    return (encode(&state), render(&state, z_held));
-                }
+            if let Some(z) = zapper_for_chunk(state.seed, chunk_id)
+                && zapper_hits_barry(&z, state.barry_y, state.camera_x)
+            {
+                state.dead = true;
+                state.death_anim = 0;
+                return (encode(&state), render(&state, z_held));
             }
         }
 

@@ -54,8 +54,8 @@ hand-rolled u64 in range always decodes to a solvable board.
 */
 use bitwise_games::draw_command::{BLUE, DARK_BLUE, DrawCommand, GREEN, WHITE};
 use bitwise_games::frame_buffer::{self, FrameBuffer};
-use bitwise_games::permutation::{from_permutation, to_permutation};
 use bitwise_games::{Game, Key};
+use rancor::permutation;
 
 // The 15 numbered tiles (the blank, 0, is factored out and stored separately).
 const TILE_SYMBOLS: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
@@ -148,7 +148,7 @@ fn encode(state: &State) -> u64 {
     // blank, so it always toggles reachability — no two reachable boards collide.
     let blank = find_empty(state) as u64;
     let nums = numbered(&state.tiles);
-    let rank = from_permutation(&nums);
+    let rank = permutation::rank(&nums);
     let last_digit = u64::from(nums[14] < nums[13]);
     blank * HALF_15_FACT + (rank - last_digit) / 2
 }
@@ -158,7 +158,7 @@ fn decode(code: u64) -> State {
     let reduced = code % HALF_15_FACT;
     // Unrank with the dropped digit forced to 0, then let the invariant decide
     // whether it was really 1 — if so, the last two numbered tiles were swapped.
-    let mut nums: [u8; 15] = to_permutation(reduced * 2, &TILE_SYMBOLS)
+    let mut nums: [u8; 15] = permutation::unrank(reduced * 2, &TILE_SYMBOLS)
         .try_into()
         .unwrap();
     let mut tiles = assemble(blank, &nums);
@@ -306,7 +306,7 @@ impl Game for Fifteen {
     const NAME: &'static str = "15 Puzzle";
     const FPS: usize = 30;
 
-    fn new(args: Vec<String>) -> (u64, FrameBuffer) {
+    fn init(args: Vec<String>) -> (u64, FrameBuffer) {
         let seed = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
         let state = scramble(seed);
         (encode(&state), render(&state))

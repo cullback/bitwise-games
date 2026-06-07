@@ -46,7 +46,7 @@ fn handle_connection<T: Game>(mut stream: TcpStream) -> Option<WebSocket<TcpStre
 
 fn run_loop<T: Game>(ws: &mut WebSocket<TcpStream>) {
     let args: Vec<String> = env::args().collect();
-    let (mut state, mut fb) = T::new(args);
+    let (mut state, mut fb) = T::init(args);
     let frame_dur = Duration::from_millis(1000 / T::FPS as u64);
     let mut held: Vec<Key> = Vec::new();
     let mut prev_held: Vec<Key> = Vec::new();

@@ -298,7 +298,7 @@ impl Game for LightsOut {
     const NAME: &'static str = "Lights Out";
     const FPS: usize = 30;
 
-    fn new(args: Vec<String>) -> (u64, FrameBuffer) {
+    fn init(args: Vec<String>) -> (u64, FrameBuffer) {
         let seed = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
         let grid = fresh_grid(seed);
         let state = pack(grid, 0);
@@ -335,13 +335,13 @@ impl Game for LightsOut {
         }
 
         // Z toggles the hovered cell + its 4 neighbours.
-        if buffered == Some(Key::Z) {
-            if let Some((r, c)) = hover {
-                let new_grid = apply_click(grid, r as i32, c as i32);
-                let new_count = (count + 1).min(COUNTER_MAX);
-                let new_state = pack(new_grid, new_count);
-                return (new_state, render(new_state, hover));
-            }
+        if buffered == Some(Key::Z)
+            && let Some((r, c)) = hover
+        {
+            let new_grid = apply_click(grid, r as i32, c as i32);
+            let new_count = (count + 1).min(COUNTER_MAX);
+            let new_state = pack(new_grid, new_count);
+            return (new_state, render(new_state, hover));
         }
 
         (state, render(state, hover))

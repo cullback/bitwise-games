@@ -104,7 +104,7 @@ const fn max_numbered(mines: u32, seed_bits: u32) -> usize {
     let bound: u128 = 1u128 << bits_left;
     let mut k: usize = 0;
     let mut p: u128 = 1;
-    while p * 3 + 1 <= bound {
+    while p * 3 < bound {
         p *= 3;
         k += 1;
     }
@@ -831,10 +831,11 @@ fn render(state: &State, board: &Board, hover: Option<u8>) -> FrameBuffer {
     // Hover ring is drawn *before* glyphs so the flag pole, digit, or mine
     // body lands on top of it — the yellow shows in the gaps the glyph
     // leaves rather than overpainting the glyph.
-    if !dead && !won {
-        if let Some(cell) = hover {
-            draw_hover(&mut commands, cell);
-        }
+    if !dead
+        && !won
+        && let Some(cell) = hover
+    {
+        draw_hover(&mut commands, cell);
     }
 
     // Second pass: glyphs (numbers, mines, flags). Drawn after all backgrounds
@@ -927,7 +928,7 @@ impl Game for Minesweeper {
     const NAME: &'static str = "Minesweeper";
     const FPS: usize = 30;
 
-    fn new(args: Vec<String>) -> (u64, FrameBuffer) {
+    fn init(args: Vec<String>) -> (u64, FrameBuffer) {
         let raw = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
         let seed = (raw & SEED_MASK) as u16;
         let state = fresh_state(seed);

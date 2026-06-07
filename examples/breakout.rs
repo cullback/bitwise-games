@@ -81,11 +81,11 @@ struct State {
 }
 
 fn decode(state: u64) -> State {
-    let bricks = get_bits(state, 0, N_BRICKS as u8);
-    let paddle_pos = get_bits(state, N_BRICKS as u8, 6);
-    let ball_pos_x = get_bits(state, (N_BRICKS + 6) as u8, 6);
-    let ball_pos_y = get_bits(state, (N_BRICKS + 12) as u8, 6);
-    let ball_vel = get_bits(state, (N_BRICKS + 18) as u8, 2);
+    let bricks = get_bits(state, 0, N_BRICKS);
+    let paddle_pos = get_bits(state, N_BRICKS, 6);
+    let ball_pos_x = get_bits(state, N_BRICKS + 6, 6);
+    let ball_pos_y = get_bits(state, N_BRICKS + 12, 6);
+    let ball_vel = get_bits(state, N_BRICKS + 18, 2);
     State {
         bricks,
         paddle_pos,
@@ -97,11 +97,11 @@ fn decode(state: u64) -> State {
 
 fn encode(state: &State) -> u64 {
     let mut result = 0u64;
-    result = set_bits(result, state.bricks, 0, N_BRICKS as u8);
-    result = set_bits(result, state.paddle_pos, N_BRICKS as u8, 6);
-    result = set_bits(result, state.ball_pos_x, (N_BRICKS + 6) as u8, 6);
-    result = set_bits(result, state.ball_pos_y, (N_BRICKS + 12) as u8, 6);
-    result = set_bits(result, state.ball_vel, (N_BRICKS + 18) as u8, 2);
+    result = set_bits(result, state.bricks, 0, N_BRICKS);
+    result = set_bits(result, state.paddle_pos, N_BRICKS, 6);
+    result = set_bits(result, state.ball_pos_x, N_BRICKS + 6, 6);
+    result = set_bits(result, state.ball_pos_y, N_BRICKS + 12, 6);
+    result = set_bits(result, state.ball_vel, N_BRICKS + 18, 2);
     result
 }
 
@@ -355,21 +355,16 @@ fn handle_collisions(state: &mut State, dx: i8, dy: i8, old_ball_x: u8, old_ball
             brick_index,
         );
         handle_brick_collision(state, old_ball_x, old_ball_y, brick_index, is_vertical);
-        return;
     }
 }
 
 fn update_paddle_position(paddle_pos: u8, input: &[Key]) -> u8 {
     let mut new_paddle_pos = paddle_pos;
-    if input.contains(&Key::Left) {
-        if paddle_pos > 0 {
-            new_paddle_pos -= PADDLE_VELOCITY;
-        }
+    if input.contains(&Key::Left) && paddle_pos > 0 {
+        new_paddle_pos -= PADDLE_VELOCITY;
     }
-    if input.contains(&Key::Right) {
-        if paddle_pos < BOARD_WIDTH as u8 - PADDLE_WIDTH as u8 {
-            new_paddle_pos += PADDLE_VELOCITY;
-        }
+    if input.contains(&Key::Right) && paddle_pos < BOARD_WIDTH as u8 - PADDLE_WIDTH as u8 {
+        new_paddle_pos += PADDLE_VELOCITY;
     }
     new_paddle_pos
 }
@@ -380,7 +375,7 @@ impl Game for Breakout {
     const NAME: &'static str = "Breakout";
     const FPS: usize = 30;
 
-    fn new(_args: Vec<String>) -> (u64, FrameBuffer) {
+    fn init(_args: Vec<String>) -> (u64, FrameBuffer) {
         let state = State {
             bricks: (1 << N_BRICKS) - 1,
             paddle_pos: ((BOARD_WIDTH - PADDLE_WIDTH) / 2) as u8,

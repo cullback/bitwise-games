@@ -81,8 +81,8 @@ use bitwise_games::draw_command::{
 use bitwise_games::font::{digits_of, draw_text, text_width};
 use bitwise_games::frame_buffer::FrameBuffer;
 use bitwise_games::rng;
-use bitwise_games::varlen::{from_varlen, to_varlen};
 use bitwise_games::{Game, Key};
+use rancor::varlen;
 
 const BOARD_CELLS: u32 = 8;
 const DISPLAY_PX: u32 = 128;
@@ -122,7 +122,7 @@ struct State {
     head_dir: u8,
     apple_bits: u8,
     /// Body tail as the varlen base-3 turn sequence. `body == DEAD` is the
-    /// game-over sentinel; otherwise `to_varlen(body, 3)` reconstructs turns.
+    /// game-over sentinel; otherwise `varlen::unrank(body, 3)` reconstructs turns.
     body: u64,
     /// Decoded body. Empty when `body == DEAD`. Cached so the varlen decode
     /// runs once per tick instead of twice (update + render both need it).
@@ -137,7 +137,7 @@ struct State {
 impl State {
     /// Replace the turn sequence and refresh the derived `body` + `length`.
     fn set_turns(&mut self, turns: Vec<u8>) {
-        self.body = from_varlen(&turns, 3);
+        self.body = varlen::rank(&turns, 3);
         self.length = turns.len() + 2;
         self.turns = turns;
     }
@@ -158,7 +158,7 @@ fn decode(state: u64) -> State {
     let turns = if body == DEAD {
         Vec::new()
     } else {
-        to_varlen(body, 3)
+        varlen::unrank(body, 3)
     };
     let length = turns.len() + 2;
     State {
@@ -466,7 +466,7 @@ fn fresh_board(seed: u64) -> State {
     let head: u8 = 3 * 8 + 2;
     let head_dir = DIR_RIGHT;
     let turns: Vec<u8> = vec![];
-    let body = from_varlen(&turns, 3); // = 0
+    let body = varlen::rank(&turns, 3); // = 0
     let cells = snake_cells(head, head_dir, &turns);
     let apple_bits = pick_apple_bits(seed, cells.len(), &cells);
     let length = turns.len() + 2;
@@ -582,7 +582,7 @@ impl Game for SnakeGame {
     const NAME: &'static str = "Snake";
     const FPS: usize = 5;
 
-    fn new(args: Vec<String>) -> (u64, FrameBuffer) {
+    fn init(args: Vec<String>) -> (u64, FrameBuffer) {
         let seed = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
         let state = fresh_board(seed);
         (encode(&state), render(&state))
@@ -672,7 +672,7 @@ impl Game for SnakeGame {
 
         let new_apple_bits = if ate {
             let new_cells = snake_cells(new_head, new_dir, &new_turns);
-            let new_body = from_varlen(&new_turns, 3);
+            let new_body = varlen::rank(&new_turns, 3);
             let seed = new_body ^ (new_head as u64) ^ ((new_dir as u64) << 6);
             pick_apple_bits(seed, new_cells.len(), &new_cells)
         } else {

@@ -20,7 +20,7 @@ pub trait Game {
     const FPS: usize;
 
     /// Initial state and framebuffer. Pure — any nondeterminism enters via `args`.
-    fn new(args: Vec<String>) -> (u64, FrameBuffer);
+    fn init(args: Vec<String>) -> (u64, FrameBuffer);
 
     /// One tick. Pure.
     ///

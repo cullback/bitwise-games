@@ -123,7 +123,7 @@ fn spawn(state: &mut State, rng: u64) {
     }
     let idx = (rng as usize) % empt.len();
     // 10% chance of "4" (log₂ = 2), else "2" (log₂ = 1)
-    let val = if (rng >> 16) % 10 == 0 { 2 } else { 1 };
+    let val = if (rng >> 16).is_multiple_of(10) { 2 } else { 1 };
     let (r, c) = empt[idx];
     state.cells[r][c] = val;
 }
@@ -418,7 +418,7 @@ impl Game for Twenty48 {
     const NAME: &'static str = "2048";
     const FPS: usize = 30;
 
-    fn new(args: Vec<String>) -> (u64, FrameBuffer) {
+    fn init(args: Vec<String>) -> (u64, FrameBuffer) {
         let seed = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
         let state = fresh_board(seed);
         (encode(&state), render(&state))
@@ -441,11 +441,11 @@ impl Game for Twenty48 {
             return (encode(&state), render(&state));
         }
 
-        if let Some(dir @ (Key::Up | Key::Down | Key::Left | Key::Right)) = buffered {
-            if slide(&mut state, dir) {
-                let r = rng::next(encode(&state));
-                spawn(&mut state, r);
-            }
+        if let Some(dir @ (Key::Up | Key::Down | Key::Left | Key::Right)) = buffered
+            && slide(&mut state, dir)
+        {
+            let r = rng::next(encode(&state));
+            spawn(&mut state, r);
         }
 
         (encode(&state), render(&state))
