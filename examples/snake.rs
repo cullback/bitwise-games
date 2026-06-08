@@ -1,18 +1,23 @@
 /*
 
-Snake on a 9×8 grid, with the whole game state packed into one u64.
+Snake on an 8×9 grid (8 rows × 9 cols), with the whole game state packed into one u64.
 
 The snake's body is a directed self-avoiding walk (head → tail). We rank that
 walk with `rancor::saw` and store the integer; the apple rides in the low bits.
 
 | Field     | Bits | Description                                              |
 |-----------|------|----------------------------------------------------------|
-| apple     | 7    | apple cell 0..=71; 127 is the "dead" sentinel            |
+| apple     | 7    | apple cell 0..=71, or sentinel (126 = title, 127 = dead) |
 | body rank | ~57  | rancor::saw rank of the head→tail walk (any length ≥ 1)  |
 
 Layout (low → high): apple | body rank. The board has 72 cells, so the full
 SAW count (~9.3×10¹⁶ ≈ 2^56.4) plus 7 apple bits fits a u64 exactly — the
 snake can grow to fill the entire board, no length cap.
+
+Three states live in the same encoding:
+  - title:   apple = 126; body = spawn position (tail on left edge)
+  - dead:    apple = 127; body = corpse path at the moment of death
+  - playing: apple = 0..71; body = active snake
 
 `rancor::saw::Saw<9, 8>` builds its ranking table once (~70 ms) on first use;
 every rank/unrank after that is microseconds, far inside the 5 FPS budget.
@@ -31,7 +36,7 @@ use std::sync::OnceLock;
 
 // --- Board / display ---
 //
-// 9 wide × 8 tall board, 14 px cells, 1 px border all around (score zone
+// 8 rows × 9 cols, 14 px cells, 1 px border all around (score zone
 // included). The "missing 9th row" at the top is the score zone. Math:
 //   - Outer top:    y =   0      (1 px)
 //   - Score:        y =   1..13  (13 px tall, fits a 9×11 digit at y=2..12)
@@ -139,12 +144,17 @@ fn from_coords(coords: &[(usize, usize)]) -> Vec<u8> {
 
 const APPLE_BITS: u32 = 7;
 const APPLE_MASK: u64 = (1u64 << APPLE_BITS) - 1;
+/// Apple value `127` flags the dead state; corpse body still round-trips.
 const DEAD_APPLE: u8 = 127;
+/// Apple value `126` flags the title screen; the body sits at the spawn
+/// position. Player presses Z/X to transition to active play.
+const TITLE_APPLE: u8 = 126;
 
 struct State {
-    /// Cell where the apple sits (0..=71), or `DEAD_APPLE` (127) if the snake
-    /// is dead. When the board is full there's no free cell, but the renderer
-    /// detects "won" from the snake length so the apple value is ignored.
+    /// Cell where the apple sits (0..=71), or a sentinel (`TITLE_APPLE` /
+    /// `DEAD_APPLE`) for non-playing states. When the board is full there's
+    /// no free cell, but the renderer detects "won" from the snake length
+    /// so the apple value is ignored.
     apple: u8,
     /// Snake cells in head→tail order; `cells[0]` is the head. Always ≥ 2 cells
     /// (the spawn length); a dead snake keeps its full body for the corpse.
@@ -155,6 +165,10 @@ struct State {
 impl State {
     fn body_len(&self) -> usize {
         self.cells.len() - 1
+    }
+
+    fn is_title(&self) -> bool {
+        self.apple == TITLE_APPLE
     }
 
     /// Direction the head is currently facing (the direction it will move next
@@ -323,26 +337,34 @@ fn render(state: &State) -> FrameBuffer {
     bg.push(DrawCommand::rect(0, 0, DISPLAY_PX, DISPLAY_PX, BLACK));
 
     let dead = state.dead;
+    let title = state.is_title();
     let cells = &state.cells;
     let facing = state.facing();
 
-    // Score = apples eaten = body_len − 1 (the starting body length is 1).
-    // Always drawn so the final score stays visible on the death screen.
-    // Right-aligned: rightmost on-pixel sits at x=123 (3 px from inner edge).
-    let score = (state.body_len() as u32).saturating_sub(1);
-    let score_digits = digits_of(score);
-    let score_w = score_digits.len() as u32 * 10 - 1; // 9 px glyph + 1 px gap, minus trailing gap
-    let score_x = 124 - score_w;
-    draw_big_text(&mut bg, &score_digits, score_x, 2, WHITE);
+    if title {
+        // Title screen: replace the score zone with a PRESS Z prompt.
+        // Centered roughly by eye in the 124-px-wide inner area.
+        tiny::draw_text(&mut bg, b"PRESS Z", 28, 1, 2, WHITE);
+    } else {
+        // Score = apples eaten = body_len − 1 (starting body length is 1).
+        // Always drawn so the final score stays visible on the death screen.
+        // Right-aligned: rightmost on-pixel sits at x=123 (3 px from inner edge).
+        let score = (state.body_len() as u32).saturating_sub(1);
+        let score_digits = digits_of(score);
+        let score_w = score_digits.len() as u32 * 10 - 1;
+        let score_x = 124 - score_w;
+        draw_big_text(&mut bg, &score_digits, score_x, 2, WHITE);
 
-    // Status text: left-aligned in the score zone, shares row with the score.
-    // Tiny font is 6 px tall; vertical-center in the 11-px-tall score line by
-    // dropping it 4 px from the score's top.
-    let won = !state.dead && state.body_len() >= MAX_LEN;
-    if state.dead {
-        tiny::draw_text(&mut bg, b"GAME OVER", 4, 4, RED);
-    } else if won {
-        tiny::draw_text(&mut bg, b"YOU WIN", 4, 4, GREEN);
+        // Status text: left-aligned in the score zone, shares row with the score.
+        // Drawn at 2× scale (8 px stride × 12 px tall) so it reads at the same
+        // weight as the 11 px score digits. Top-aligned at y=1 to fit the 13 px
+        // score zone (y=1..13).
+        let won = !state.dead && state.body_len() >= MAX_LEN;
+        if state.dead {
+            tiny::draw_text(&mut bg, b"GAME OVER", 4, 1, 2, RED);
+        } else if won {
+            tiny::draw_text(&mut bg, b"YOU WIN", 4, 1, 2, GREEN);
+        }
     }
 
     bg.push(DrawCommand::rect(
@@ -401,8 +423,9 @@ fn render(state: &State) -> FrameBuffer {
 
     draw_head_cell(&mut fb, cells[0], facing, dead);
 
-    // Skip drawing when dead or when the board is full (won — no apple).
-    if !dead && state.body_len() < MAX_LEN {
+    // Apple is shown only during active play — not on title, not on
+    // death, not on a full board.
+    if !title && !dead && state.body_len() < MAX_LEN {
         draw_apple(&mut fb, state.apple);
     }
 
@@ -411,17 +434,28 @@ fn render(state: &State) -> FrameBuffer {
 
 // --- Game logic ---
 
-fn fresh_board(seed: u64) -> State {
-    // Spawn centered, facing right with body to the left. Length 2.
+/// Title-screen state: snake spawned at the left edge facing right, tail
+/// flush against column 0. Player has 8 cells of horizontal runway before
+/// reaching the right wall, plus an unlimited wait on Z/X to begin.
+fn fresh_board() -> State {
     let row = (BOARD_H / 2) as u8;
-    let col = (BOARD_W / 2) as u8;
-    let head: u8 = row * BOARD_W as u8 + col;
-    let body0: u8 = head - 1;
-    let cells = vec![head, body0];
-    let apple = pick_apple(&cells, seed);
+    let head: u8 = row * BOARD_W as u8 + 1; // col 1
+    let tail: u8 = row * BOARD_W as u8; // col 0
     State {
-        apple,
-        cells,
+        apple: TITLE_APPLE,
+        cells: vec![head, tail],
+        dead: false,
+    }
+}
+
+/// Transition from the title state into active play: place the first
+/// apple, drop the title sentinel. The first-apple seed is derived from
+/// the snake body's saw rank, so it's deterministic per spawn body.
+fn start_playing(state: &State) -> State {
+    let seed = saw().rank(&to_coords(&state.cells));
+    State {
+        apple: pick_apple(&state.cells, seed),
+        cells: state.cells.clone(),
         dead: false,
     }
 }
@@ -432,9 +466,8 @@ impl Game for Snake {
     const NAME: &'static str = "Snake";
     const FPS: usize = 5;
 
-    fn init(args: Vec<String>) -> (u64, FrameBuffer) {
-        let seed = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        let state = fresh_board(seed);
+    fn init(_args: Vec<String>) -> (u64, FrameBuffer) {
+        let state = fresh_board();
         (encode(&state), render(&state))
     }
 
@@ -446,10 +479,19 @@ impl Game for Snake {
     ) -> (u64, FrameBuffer) {
         let mut state = decode(state);
 
-        // Dead or won: freeze, restart on Z/X.
+        // Title screen: press Z/X to begin.
+        if state.is_title() {
+            if matches!(buffered, Some(Key::Z) | Some(Key::X)) {
+                let next = start_playing(&state);
+                return (encode(&next), render(&next));
+            }
+            return (encode(&state), render(&state));
+        }
+
+        // Dead or won: freeze, restart back to title on Z/X.
         if state.dead || state.body_len() >= MAX_LEN {
             if matches!(buffered, Some(Key::Z) | Some(Key::X)) {
-                let next = fresh_board(rng::next(encode(&state)));
+                let next = fresh_board();
                 return (encode(&next), render(&next));
             }
             return (encode(&state), render(&state));

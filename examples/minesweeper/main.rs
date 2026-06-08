@@ -1,7 +1,7 @@
 /*
 
-Minesweeper on a 9-wide × 8-tall grid (72 cells, 13 mines, 18.1% density —
-between Intermediate and Expert).
+Minesweeper on an 8×9 grid — 8 rows × 9 cols (72 cells, 13 mines, 18.1%
+density — between Intermediate and Expert).
 
 # Inputs
 
@@ -102,8 +102,8 @@ Count 8 (essentially impossible at this density) is rendered as the "7"
 sprite — graceful degradation rather than crash.
 
 The mines counter and status panel use `assets/6x4-alphanum.aseprite` — 36
-glyphs (`0`–`9`, `A`–`Z`) in a 16-wide × 3-tall grid, each glyph 4 px
-content wide and 6 px tall with 1 px gutters.
+glyphs (`0`–`9`, `A`–`Z`) in a 3×16 grid (3 rows × 16 cols), each glyph
+6 px tall and 4 px wide with 1 px gutters.
 
 */
 
@@ -388,9 +388,9 @@ fn blit_number(fb: &mut FrameBuffer, cell: u8, count: u8) {
 
 // --- Mines counter font (assets/6x4-alphanum.aseprite) ---
 //
-// 36 glyphs in a 16-wide × 3-tall grid. Each cell is 5 px wide (4 px
-// content + 1 px gutter) and 7 px tall (6 px content + 1 px gutter).
-// Source image is 80×21 (16*5=80, 3*7=21).
+// 36 glyphs in a 3×16 grid (3 rows × 16 cols). Each cell is 7 px tall
+// (6 px content + 1 px gutter) and 5 px wide (4 px content + 1 px
+// gutter). Source image is 21×80 (3*7=21 tall, 16*5=80 wide).
 //
 // Row 1 (image rows 0–5):  0 1 2 3 4 5 6 7 8 9 A B C D E F  (hex)
 // Row 2 (image rows 7–12): G H I J K L M N O P Q R S T U V

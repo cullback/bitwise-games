@@ -297,9 +297,11 @@ pub fn digits_of(n: u32) -> Vec<u8> {
     out
 }
 
-/// 5×3 character font loaded from `assets/5x3-chars.aseprite`. Each cell is
-/// 4×6 (3×5 ink + 1px gutter on the right and bottom), so chars blit
-/// side-by-side with automatic letter-spacing and line-spacing.
+/// 5×3 alphanum font loaded from `assets/5x3-alphanum.aseprite`. Each cell
+/// is 4×6 (3×5 ink + 1 px gutter on the right and bottom), so chars blit
+/// side-by-side with automatic letter-spacing and line-spacing. Glyphs are
+/// laid out in a 16×4 grid in row-major order: digits `0`–`9` then letters
+/// `A`–`Z` (36 glyphs total; the last row is unused).
 pub mod tiny {
     use crate::aseprite::load_glyph_grid;
     use crate::draw_command::{Color, DrawCommand};
@@ -315,39 +317,68 @@ pub mod tiny {
     fn glyphs() -> &'static [[u16; CHAR_H as usize]; COUNT] {
         GLYPHS.get_or_init(|| {
             load_glyph_grid::<{ CHAR_W }, { CHAR_H as usize }, COLS, COUNT>(include_bytes!(
-                "../assets/5x3-chars.aseprite"
+                "../assets/5x3-alphanum.aseprite"
             ))
         })
     }
 
-    /// Map ASCII byte to glyph index. Only space, digits, and uppercase A–Z
-    /// are supported right now. Unsupported chars draw nothing.
+    /// Map ASCII byte to glyph index: digits `0`–`9` → `0`–`9`,
+    /// letters `A`–`Z` → `10`–`35`. Unsupported bytes (including space)
+    /// draw nothing, but `draw_text` still advances the cursor so they
+    /// render as blank cells in the layout.
     pub fn char_index(c: u8) -> Option<u8> {
         match c {
-            b' ' => Some(0),
-            b'0'..=b'9' => Some(16 + (c - b'0')),
-            b'A'..=b'Z' => Some(26 + (c - b'A')),
+            b'0'..=b'9' => Some(c - b'0'),
+            b'A'..=b'Z' => Some(10 + (c - b'A')),
             _ => None,
         }
     }
 
-    pub fn draw_char(commands: &mut Vec<DrawCommand>, idx: u8, x: u32, y: u32, color: Color) {
+    pub fn draw_char(
+        commands: &mut Vec<DrawCommand>,
+        idx: u8,
+        x: u32,
+        y: u32,
+        scale: u32,
+        color: Color,
+    ) {
         let pattern = &glyphs()[idx as usize];
         for (row, &bits) in pattern.iter().enumerate() {
             for col in 0..CHAR_W {
                 if (bits >> (CHAR_W - 1 - col)) & 1 == 1 {
-                    commands.push(DrawCommand::rect(x + col, y + row as u32, 1, 1, color));
+                    commands.push(DrawCommand::rect(
+                        x + col * scale,
+                        y + row as u32 * scale,
+                        scale,
+                        scale,
+                        color,
+                    ));
                 }
             }
         }
     }
 
-    /// Draw `text` at `(x, y)`. Unsupported chars are silent gaps so layout
+    /// Draw `text` at `(x, y)` scaled by `scale` (1 = native 4 px stride,
+    /// 2 = 8 px stride, etc.). Unsupported chars are silent gaps so layout
     /// stays predictable.
-    pub fn draw_text(commands: &mut Vec<DrawCommand>, text: &[u8], x: u32, y: u32, color: Color) {
+    pub fn draw_text(
+        commands: &mut Vec<DrawCommand>,
+        text: &[u8],
+        x: u32,
+        y: u32,
+        scale: u32,
+        color: Color,
+    ) {
         for (i, &c) in text.iter().enumerate() {
             if let Some(idx) = char_index(c) {
-                draw_char(commands, idx, x + i as u32 * CHAR_W, y, color);
+                draw_char(
+                    commands,
+                    idx,
+                    x + i as u32 * CHAR_W * scale,
+                    y,
+                    scale,
+                    color,
+                );
             }
         }
     }

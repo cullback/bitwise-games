@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn subset_rule_clears_otherwise_stuck_boards() {
-        // Sweep a few hundred random 9×8 boards. Count how many basic rules
+        // Sweep a few hundred random 8×9 boards. Count how many basic rules
         // fail to clear but the full rule set does. Should be > 0 if subset
         // propagation is doing real work.
         let mut helped = 0;

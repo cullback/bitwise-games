@@ -27,7 +27,7 @@ The argument is a 7-bit seed (`0..127`). Same seed + same first-click cell = sam
 | Flags        | Tentative scratchpad   | **Commitments — wrong flag = death**  |
 | Guessing     | Sometimes forced       | Never; every board solvable           |
 | First click  | Moves mines under hood | Rotates seed to a valid board         |
-| Board size   | 9×9 / 16×16 / 30×16    | 9×8, always                           |
+| Board size   | 9×9 / 16×16 / 16×30    | 8×9, always                           |
 | Mine density | 12% – 21%              | 18% (between Intermediate and Expert) |
 | End screen   | Modal overlay          | Right-side panel shows `WIN` / `DIE`  |
 | State        | Unbounded              | 64 bits, full round-trip              |

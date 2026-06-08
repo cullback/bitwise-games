@@ -99,7 +99,7 @@ const DEATH_ANIM_BITS: u8 = 4;
 
 const CAMX_MASK: u32 = (1u32 << CAMX_BITS) - 1;
 
-// --- Placeholder Barry sprite, 6×10, 1 frame ---
+// --- Placeholder Barry sprite, 10×6 (10 tall × 6 wide), 1 frame ---
 // Real PNG-imported art slots in here later.
 
 const T: u8 = TRANSPARENT;
