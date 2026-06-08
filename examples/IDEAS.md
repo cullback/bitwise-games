@@ -56,6 +56,11 @@
 
 - fixed width
 - how to do logs? i think its just a rendering issue?
+- for stream rows, interpolate?
+
+## Cab ride
+
+- https://www.lexaloffle.com/bbs/?tid=41332
 
 ## connect four
 

@@ -8,3 +8,11 @@ asefile = "0.3"
 rancor = { path = "../rancor" }
 rustc-hash = "2"
 tungstenite = "0.24"
+
+[[example]]
+name = "minesweeper"
+path = "examples/minesweeper/main.rs"
+
+[[example]]
+name = "minesweeper_density"
+path = "examples/minesweeper/density.rs"
