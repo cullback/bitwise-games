@@ -44,10 +44,10 @@ on their region's border is revealed.
 
 # Budget
 
-64 bits = 7 (seed) + 1 (dead) + 56 cell bits. At 13 mines on 9×8 the mean
-interactive count is ~57 (13 mines + ~37 numbered + ~17 zero). About 45% of
-random placements fit budget; combined with the solvability filter ~5% of
-placements are accepted, comfortably above the 5000-attempt threshold.
+64 bits = 7 (seed) + 1 (dead) + 56 cell-assertion bits. The engine's
+`max_numbered` constraint caps numbered cells at 43 (= 56 − N_MINES), so
+the per-cell bits always fit. All 128 seeds land inside the 5000-attempt
+budget under the full rule set.
 
 Note: there are 72 cells but the cell-position index needs to fit in `1 <<
 cell` shifts; we use `u128` for `state.asserted` internally. The encoded
@@ -55,16 +55,18 @@ u64 only writes/reads N_INTERACTIVE ≤ 56 bits.
 
 # Solvability
 
-Boards are filtered at generation via a basic deductive solver that picks
-the largest-zero-region's first cell as the free starting click and iterates
-two rules until no more progress:
+Boards go through `engine::solve` with `RuleSet::full()`: single-cell rules
+A and B plus subset propagation, which covers every named multi-cell
+pattern (1-1, 1-2-1, 1-2-2-1, …) without hard-coded matchers:
 
   A. number's hidden neighbors == count − flags  →  flag all hidden
   B. number's flagged neighbors == count          →  reveal all hidden
+  S. constraint X's hidden ⊆ Y's  →  Y \\ X is its own constraint that
+     forces flags or reveals whenever it saturates or zeros out
 
-A board is "solvable" iff this loop reveals every non-mine cell. This
-rejects boards that force 50/50 guesses *or* need pattern-based reasoning.
-Accepted boards are guaranteed clearable by the basic rules.
+A board is accepted iff this loop reveals every non-mine cell starting
+from a cascade at its largest zero region. No guessing is ever required,
+but the player needs to know more than just A and B to clear every board.
 
 # Win
 
@@ -81,6 +83,8 @@ it enables rule B (reveal all hidden = safe).
   - Chrome strip (y=0..16):
       mines-remaining counter at (4,4)–(35,13) — inset 3D black panel
       smiley face sprite centered at (58, 3)
+      status panel at (92,4)–(123,13) — mirrors the counter; shows
+      `WIN`/`LOSE` text when the game ends, black during play
   - Grid box (4, 17)–(123, 123): inset 3D bevel around a black interior
     that shows through 1 px gaps between 12×12 cell sprites
 
@@ -97,8 +101,9 @@ Tiles are loaded from `minesweeper.aseprite` (14 tiles × 12×12):
 Count 8 (essentially impossible at this density) is rendered as the "7"
 sprite — graceful degradation rather than crash.
 
-The mines counter uses the 5-wide cell × 6-tall glyphs in
-`assets/6x4-alphanum.aseprite` (4-pixel digits with a 1 px gutter).
+The mines counter and status panel use `assets/6x4-alphanum.aseprite` — 36
+glyphs (`0`–`9`, `A`–`Z`) in a 16-wide × 3-tall grid, each glyph 4 px
+content wide and 6 px tall with 1 px gutters.
 
 */
 
@@ -109,11 +114,11 @@ use bitwise_games::aseprite::load_color_grid;
 use bitwise_games::draw_command::{
     BLACK, Color, DARK_GREY, DrawCommand, GREEN, LIGHT_GREY, RED, WHITE, YELLOW,
 };
-use bitwise_games::font::draw_text;
 use bitwise_games::frame_buffer::FrameBuffer;
 use bitwise_games::rng;
 use bitwise_games::sprite::{Rot, blit_square};
 use bitwise_games::{Game, Key};
+use engine::Board;
 use std::sync::OnceLock;
 
 const ROWS: usize = 8;
@@ -127,17 +132,11 @@ const DEAD_BIT: u32 = SEED_BITS; // bit 7
 const CELL_BITS_START: u32 = SEED_BITS + 1; // bit 8
 const MAX_INTERACTIVE: usize = (64 - CELL_BITS_START) as usize; // 56
 
+// Cell size, shared by grid sprites and the chrome smiley.
 const CELL_PX: u32 = 12;
 const CELL_PITCH: u32 = CELL_PX + 1; // sprite + 1 px black separator
 
-// Grid box: bevel(1) + K border(1) + cells/separators + K border(1) + bevel(1)
-const GRID_FRAME_X: u32 = 4;
-const GRID_FRAME_Y: u32 = 17;
-const GRID_W: u32 = (COLS as u32) * CELL_PITCH + 3; // 120
-const GRID_H: u32 = (ROWS as u32) * CELL_PITCH + 3; // 107
-const GRID_X: u32 = GRID_FRAME_X + 2; // 6 (first cell sprite x)
-const GRID_Y: u32 = GRID_FRAME_Y + 2; // 19 (first cell sprite y)
-
+// Chrome strip (y=0..16): mines counter (left) / smiley (center) / status (right).
 const COUNTER_X: u32 = 4;
 const COUNTER_Y: u32 = 4;
 const COUNTER_W: u32 = 32;
@@ -145,6 +144,20 @@ const COUNTER_H: u32 = 10;
 
 const SMILEY_X: u32 = (128 - CELL_PX) / 2; // 58
 const SMILEY_Y: u32 = 3;
+
+// Right-side status panel mirrors the mines counter geometry.
+const STATUS_X: u32 = 128 - 4 - COUNTER_W; // 92
+const STATUS_Y: u32 = COUNTER_Y;
+const STATUS_W: u32 = COUNTER_W;
+const STATUS_H: u32 = COUNTER_H;
+
+// Grid box: bevel(1) + K border(1) + cells/separators + K border(1) + bevel(1).
+const GRID_FRAME_X: u32 = 4;
+const GRID_FRAME_Y: u32 = 17;
+const GRID_W: u32 = (COLS as u32) * CELL_PITCH + 3; // 120
+const GRID_H: u32 = (ROWS as u32) * CELL_PITCH + 3; // 107
+const GRID_X: u32 = GRID_FRAME_X + 2; // 6 (first cell sprite x)
+const GRID_Y: u32 = GRID_FRAME_Y + 2; // 19 (first cell sprite y)
 
 const MAX_GEN_ATTEMPTS: u32 = 5000;
 
@@ -162,7 +175,7 @@ struct State {
 }
 
 fn encode(state: &State) -> u64 {
-    let board = generate_board(state.seed);
+    let board = board_for_seed(state.seed);
     let mut packed: u64 = state.seed as u64;
     packed |= (state.dead as u64) << DEAD_BIT;
     let mut bit = CELL_BITS_START;
@@ -179,7 +192,7 @@ fn encode(state: &State) -> u64 {
 fn decode(packed: u64) -> State {
     let seed = (packed & SEED_MASK) as u8;
     let dead = ((packed >> DEAD_BIT) & 1) == 1;
-    let board = generate_board(seed);
+    let board = board_for_seed(seed);
     let mut asserted: u128 = 0;
     let mut bit = CELL_BITS_START;
     for cell in 0..N_CELLS {
@@ -195,8 +208,6 @@ fn decode(packed: u64) -> State {
         asserted,
     }
 }
-
-use engine::Board;
 
 fn is_interactive(board: &Board, cell: usize) -> bool {
     board.mines[cell] || board.counts[cell] > 0
@@ -242,15 +253,8 @@ fn boards() -> &'static [Board] {
     })
 }
 
-fn generate_board(seed: u8) -> &'static Board {
+fn board_for_seed(seed: u8) -> &'static Board {
     &boards()[seed as usize]
-}
-
-#[cfg(test)]
-fn n_interactive(board: &Board) -> usize {
-    (0..board.cells())
-        .filter(|&c| is_interactive(board, c))
-        .count()
 }
 
 // --- Derived state ---
@@ -271,10 +275,6 @@ fn cell_revealed(state: &State, board: &Board, cell: usize) -> bool {
     }
     let region = board.cell_to_region[cell];
     region != i16::MAX && region_revealed(state, board, region as usize)
-}
-
-fn is_dead(state: &State) -> bool {
-    state.dead
 }
 
 fn is_won(state: &State, board: &Board) -> bool {
@@ -299,17 +299,17 @@ fn hovered_cell(mouse: Option<(u8, u8)>) -> Option<u8> {
 }
 
 /// Search the 128 seeds for one whose board has `target` as a zero cell
-/// that's also a deductively-solvable cascade origin. The search starts
-/// from `rotate_offset` (a hash of the initial CLI seed and `target`) so
-/// the same click on different initial seeds picks different valid seeds —
-/// mixing CLI randomness with player choice. Deterministic given both
-/// inputs.
-fn find_first_click_seed(target: u8, rotate_offset: u8) -> Option<u8> {
+/// that's also a deductively-solvable cascade origin. The search start is
+/// a hash of `initial_seed` and `target`, so the same click on different
+/// initial seeds lands on different valid seeds — mixing CLI randomness
+/// with player choice. Deterministic given both inputs.
+fn find_first_click_seed(target: u8, initial_seed: u8) -> Option<u8> {
     let mask = SEED_MASK as u8;
     let rules = engine::RuleSet::full();
+    let start = (rng::next(((initial_seed as u64) << 8) | target as u64) & SEED_MASK) as u8;
     for k in 0..=mask {
-        let seed = rotate_offset.wrapping_add(k) & mask;
-        let board = generate_board(seed);
+        let seed = start.wrapping_add(k) & mask;
+        let board = board_for_seed(seed);
         let c = target as usize;
         if board.mines[c] || board.counts[c] != 0 {
             continue;
@@ -319,13 +319,6 @@ fn find_first_click_seed(target: u8, rotate_offset: u8) -> Option<u8> {
         }
     }
     None
-}
-
-/// Mix the initial seed with the clicked cell into a 7-bit search start.
-/// Avoids the trivial identity mapping where seed and cell sum predictably.
-fn rotate_offset(initial_seed: u8, target: u8) -> u8 {
-    let mixed = rng::next(((initial_seed as u64) << 8) | target as u64);
-    (mixed & SEED_MASK) as u8
 }
 
 fn apply_reveal_commit(state: &mut State, board: &Board, cell: u8) {
@@ -395,29 +388,36 @@ fn blit_number(fb: &mut FrameBuffer, cell: u8, count: u8) {
 
 // --- Mines counter font (assets/6x4-alphanum.aseprite) ---
 //
-// 16 hex glyphs in a single row. Each cell is 5 px wide (4 px content + 1 px
-// gutter); content is 6 px tall. The source image is 80 wide × 14 tall, but
-// only the top 6 rows carry glyph data — the rest is padding the artist left
-// around the sheet.
+// 36 glyphs in a 16-wide × 3-tall grid. Each cell is 5 px wide (4 px
+// content + 1 px gutter) and 7 px tall (6 px content + 1 px gutter).
+// Source image is 80×21 (16*5=80, 3*7=21).
+//
+// Row 1 (image rows 0–5):  0 1 2 3 4 5 6 7 8 9 A B C D E F  (hex)
+// Row 2 (image rows 7–12): G H I J K L M N O P Q R S T U V
+// Row 3 (image rows 14–19): W X Y Z
 
 const MINES_GLYPH_W: u32 = 4;
 const MINES_GLYPH_H: usize = 6;
 const MINES_CELL_W: u32 = 5;
+const MINES_CELL_H: u32 = 7;
+const MINES_GRID_COLS: usize = 16;
+const MINES_FONT_COUNT: usize = 36;
 
-static MINES_FONT: OnceLock<[[u8; MINES_GLYPH_H]; 16]> = OnceLock::new();
+static MINES_FONT: OnceLock<[[u8; MINES_GLYPH_H]; MINES_FONT_COUNT]> = OnceLock::new();
 
-fn mines_font() -> &'static [[u8; MINES_GLYPH_H]; 16] {
+fn mines_font() -> &'static [[u8; MINES_GLYPH_H]; MINES_FONT_COUNT] {
     MINES_FONT.get_or_init(|| {
         let bytes = include_bytes!("../../assets/6x4-alphanum.aseprite");
         let ase = AsepriteFile::read(&bytes[..]).expect("parse 6x4-alphanum");
         let img = ase.frame(0).image();
-        let mut out = [[0u8; MINES_GLYPH_H]; 16];
+        let mut out = [[0u8; MINES_GLYPH_H]; MINES_FONT_COUNT];
         for (g, glyph) in out.iter_mut().enumerate() {
-            let x0 = g as u32 * MINES_CELL_W;
+            let x0 = (g % MINES_GRID_COLS) as u32 * MINES_CELL_W;
+            let y0 = (g / MINES_GRID_COLS) as u32 * MINES_CELL_H;
             for (y, row_bits) in glyph.iter_mut().enumerate() {
                 let mut bits = 0u8;
                 for x in 0..MINES_GLYPH_W {
-                    let p = img.get_pixel(x0 + x, y as u32);
+                    let p = img.get_pixel(x0 + x, y0 + y as u32);
                     if p.0[3] > 0 {
                         bits |= 1 << (MINES_GLYPH_W - 1 - x);
                     }
@@ -429,8 +429,17 @@ fn mines_font() -> &'static [[u8; MINES_GLYPH_H]; 16] {
     })
 }
 
-fn draw_mines_digit(commands: &mut Vec<DrawCommand>, digit: u8, x: u32, y: u32, color: Color) {
-    let pattern = &mines_font()[digit as usize];
+/// Map ASCII byte to glyph index. Supports `0`–`9` and `A`–`Z`.
+fn mines_glyph_index(ch: u8) -> Option<usize> {
+    match ch {
+        b'0'..=b'9' => Some((ch - b'0') as usize),
+        b'A'..=b'Z' => Some(10 + (ch - b'A') as usize),
+        _ => None,
+    }
+}
+
+fn draw_mines_glyph(commands: &mut Vec<DrawCommand>, idx: usize, x: u32, y: u32, color: Color) {
+    let pattern = &mines_font()[idx];
     for (row, &bits) in pattern.iter().enumerate() {
         for col in 0..MINES_GLYPH_W {
             if (bits >> (MINES_GLYPH_W - 1 - col)) & 1 == 1 {
@@ -438,6 +447,19 @@ fn draw_mines_digit(commands: &mut Vec<DrawCommand>, digit: u8, x: u32, y: u32, 
             }
         }
     }
+}
+
+fn draw_mines_text(commands: &mut Vec<DrawCommand>, text: &[u8], x: u32, y: u32, color: Color) {
+    for (i, &ch) in text.iter().enumerate() {
+        if let Some(idx) = mines_glyph_index(ch) {
+            draw_mines_glyph(commands, idx, x + i as u32 * MINES_CELL_W, y, color);
+        }
+    }
+}
+
+fn mines_text_width(n_chars: u32) -> u32 {
+    // n glyphs × 4 px + (n−1) gaps × 1 px
+    n_chars * MINES_GLYPH_W + n_chars.saturating_sub(1)
 }
 
 // --- Chrome (top status strip) ---
@@ -468,24 +490,51 @@ fn draw_background(commands: &mut Vec<DrawCommand>) {
     draw_raised_bevel(commands, 0, 0, 128, 128);
 }
 
-fn draw_mines_counter(commands: &mut Vec<DrawCommand>, remaining: i32) {
-    // Inset black panel — dark grey on top-left, white on bottom-right.
-    commands.push(DrawCommand::rect(
-        COUNTER_X, COUNTER_Y, COUNTER_W, COUNTER_H, BLACK,
-    ));
-    draw_inset_bevel(commands, COUNTER_X, COUNTER_Y, COUNTER_W, COUNTER_H);
+/// Inset black panel with optional centered text. Used for both the mines
+/// counter (left) and the win/lose status panel (right).
+fn draw_inset_panel(
+    commands: &mut Vec<DrawCommand>,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    text: &[u8],
+    color: Color,
+) {
+    commands.push(DrawCommand::rect(x, y, w, h, BLACK));
+    draw_inset_bevel(commands, x, y, w, h);
+    if text.is_empty() {
+        return;
+    }
+    let text_w = mines_text_width(text.len() as u32);
+    let dx = x + (w - text_w) / 2;
+    let dy = y + (h - MINES_GLYPH_H as u32) / 2;
+    draw_mines_text(commands, text, dx, dy, color);
+}
 
-    // Three red digits centered in the panel. 3 × 4 + 2 gaps = 14 wide.
-    let total_w = 3 * MINES_GLYPH_W + 2;
-    let dx = COUNTER_X + (COUNTER_W - total_w) / 2;
-    let dy = COUNTER_Y + (COUNTER_H - MINES_GLYPH_H as u32) / 2;
+fn draw_mines_counter(commands: &mut Vec<DrawCommand>, remaining: i32) {
     let n = remaining.clamp(0, 999) as u32;
-    let hundreds = (n / 100) as u8;
-    let tens = ((n / 10) % 10) as u8;
-    let ones = (n % 10) as u8;
-    draw_mines_digit(commands, hundreds, dx, dy, RED);
-    draw_mines_digit(commands, tens, dx + MINES_CELL_W, dy, RED);
-    draw_mines_digit(commands, ones, dx + 2 * MINES_CELL_W, dy, RED);
+    let text = [
+        b'0' + (n / 100) as u8,
+        b'0' + ((n / 10) % 10) as u8,
+        b'0' + (n % 10) as u8,
+    ];
+    draw_inset_panel(
+        commands, COUNTER_X, COUNTER_Y, COUNTER_W, COUNTER_H, &text, RED,
+    );
+}
+
+fn draw_status_panel(commands: &mut Vec<DrawCommand>, dead: bool, won: bool) {
+    let (text, color): (&[u8], Color) = if dead {
+        (b"DIE", RED)
+    } else if won {
+        (b"WIN", GREEN)
+    } else {
+        (b"", RED) // empty during normal play; color unused
+    };
+    draw_inset_panel(
+        commands, STATUS_X, STATUS_Y, STATUS_W, STATUS_H, text, color,
+    );
 }
 
 fn draw_smiley(fb: &mut FrameBuffer, dead: bool, won: bool) {
@@ -505,23 +554,6 @@ fn draw_hover(commands: &mut Vec<DrawCommand>, cell: u8) {
     commands.push(DrawCommand::rect(x, y + CELL_PX - 1, CELL_PX, 1, YELLOW));
     commands.push(DrawCommand::rect(x, y, 1, CELL_PX, YELLOW));
     commands.push(DrawCommand::rect(x + CELL_PX - 1, y, 1, CELL_PX, YELLOW));
-}
-
-fn draw_banner(commands: &mut Vec<DrawCommand>, text: &[u8], color: Color) {
-    let scale = 2u32;
-    let glyph_w = 3 * scale;
-    let gap = scale;
-    let total_w = text.len() as u32 * glyph_w + (text.len() as u32 - 1) * gap;
-    let bw = total_w + 8;
-    let bh = 5 * scale + 8;
-    let bx = (128 - bw) / 2;
-    let by = GRID_FRAME_Y + (GRID_H - bh) / 2;
-    commands.push(DrawCommand::rect(bx, by, bw, bh, BLACK));
-    commands.push(DrawCommand::rect(bx, by, bw, 1, color));
-    commands.push(DrawCommand::rect(bx, by + bh - 1, bw, 1, color));
-    commands.push(DrawCommand::rect(bx, by, 1, bh, color));
-    commands.push(DrawCommand::rect(bx + bw - 1, by, 1, bh, color));
-    draw_text(commands, text, bx + 4, by + 4, scale, color);
 }
 
 fn render_cell(fb: &mut FrameBuffer, state: &State, board: &Board, cell: u8, dead: bool) {
@@ -556,7 +588,7 @@ fn render_cell(fb: &mut FrameBuffer, state: &State, board: &Board, cell: u8, dea
 
 fn render(state: &State, board: &Board, hover: Option<u8>) -> FrameBuffer {
     let mut fb = FrameBuffer::new();
-    let dead = is_dead(state);
+    let dead = state.dead;
     let won = !dead && is_won(state, board);
 
     let mut chrome = Vec::new();
@@ -565,6 +597,7 @@ fn render(state: &State, board: &Board, hover: Option<u8>) -> FrameBuffer {
         .filter(|&c| board.mines[c] && (state.asserted >> c) & 1 == 1)
         .count() as i32;
     draw_mines_counter(&mut chrome, N_MINES as i32 - flagged_mines);
+    draw_status_panel(&mut chrome, dead, won);
 
     // Grid: black interior with an inset 3D bevel. Sprites blit on top; the
     // 1 px gaps between them show the black through as grid lines.
@@ -583,18 +616,13 @@ fn render(state: &State, board: &Board, hover: Option<u8>) -> FrameBuffer {
         render_cell(&mut fb, state, board, cell, dead);
     }
 
-    let mut overlay = Vec::new();
     if !dead && !won {
         if let Some(cell) = hover {
+            let mut overlay = Vec::new();
             draw_hover(&mut overlay, cell);
+            fb.draw_list(&overlay);
         }
     }
-    if dead {
-        draw_banner(&mut overlay, b"GAME OVER", RED);
-    } else if won {
-        draw_banner(&mut overlay, b"YOU WIN", GREEN);
-    }
-    fb.draw_list(&overlay);
     fb
 }
 
@@ -618,7 +646,7 @@ impl Game for Minesweeper {
         let raw = args.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
         let seed = (raw & SEED_MASK) as u8;
         let state = fresh_state(seed);
-        let board = generate_board(state.seed);
+        let board = board_for_seed(state.seed);
         (encode(&state), render(&state, board, None))
     }
 
@@ -629,8 +657,8 @@ impl Game for Minesweeper {
         mouse: Option<(u8, u8)>,
     ) -> (u64, FrameBuffer) {
         let mut s = decode(state);
-        let mut board = generate_board(s.seed);
-        let dead = is_dead(&s);
+        let mut board = board_for_seed(s.seed);
+        let dead = s.dead;
         let won = !dead && is_won(&s, board);
         let hover = hovered_cell(mouse);
 
@@ -638,7 +666,7 @@ impl Game for Minesweeper {
             if matches!(buffered, Some(Key::Z) | Some(Key::X)) {
                 let next_seed = (rng::next(state) & SEED_MASK) as u8;
                 let ns = fresh_state(next_seed);
-                let nb = generate_board(ns.seed);
+                let nb = board_for_seed(ns.seed);
                 return (encode(&ns), render(&ns, nb, hover));
             }
             return (encode(&s), render(&s, board, None));
@@ -646,9 +674,9 @@ impl Game for Minesweeper {
 
         if let Some(cell) = hover {
             if s.asserted == 0 && matches!(buffered, Some(Key::Z) | Some(Key::X)) {
-                if let Some(new_seed) = find_first_click_seed(cell, rotate_offset(s.seed, cell)) {
+                if let Some(new_seed) = find_first_click_seed(cell, s.seed) {
                     s.seed = new_seed;
-                    board = generate_board(s.seed);
+                    board = board_for_seed(s.seed);
                     apply_reveal_commit(&mut s, board, cell);
                 }
             } else {
@@ -676,7 +704,7 @@ mod tests {
     #[test]
     fn alive_state_round_trips() {
         for seed in [0u8, 1, 42, 100, 127] {
-            let board = generate_board(seed);
+            let board = board_for_seed(seed);
             let mut asserted: u128 = 0;
             for c in 0..N_CELLS {
                 if board.mines[c] || board.counts[c] > 0 {
@@ -698,7 +726,7 @@ mod tests {
     #[test]
     fn dead_state_round_trips() {
         for seed in [0u8, 1, 42, 100, 127] {
-            let board = generate_board(seed);
+            let board = board_for_seed(seed);
             let mut asserted: u128 = 0;
             for (i, c) in (0..N_CELLS).enumerate() {
                 if (board.mines[c] || board.counts[c] > 0) && i % 2 == 0 {
@@ -720,7 +748,7 @@ mod tests {
     #[test]
     fn renders_initial_and_terminal_states() {
         for seed in [0u8, 42, 127] {
-            let board = generate_board(seed);
+            let board = board_for_seed(seed);
             let mut state = fresh_state(seed);
             let _ = render(&state, board, None);
             let _ = render(&state, board, Some(0));
@@ -741,9 +769,8 @@ mod tests {
         let rules = engine::RuleSet::full();
         for initial in [0u8, 5, 42, 99, 127] {
             for target in 0..N_CELLS as u8 {
-                let seed = find_first_click_seed(target, rotate_offset(initial, target))
-                    .expect("no seed for cell");
-                let board = generate_board(seed);
+                let seed = find_first_click_seed(target, initial).expect("no seed for cell");
+                let board = board_for_seed(seed);
                 let c = target as usize;
                 assert!(!board.mines[c], "cell {target} is mine in seed {seed}");
                 assert_eq!(board.counts[c], 0, "cell {target} not zero in seed {seed}");
@@ -766,7 +793,7 @@ mod tests {
         let rules = engine::RuleSet::full();
         let mut counts = vec![0usize; N_CELLS];
         for seed in 0..=SEED_MASK as u8 {
-            let board = generate_board(seed);
+            let board = board_for_seed(seed);
             for cell in 0..N_CELLS {
                 if board.mines[cell] || board.counts[cell] != 0 {
                     continue;
@@ -807,11 +834,13 @@ mod tests {
     #[test]
     fn every_seed_finds_a_solvable_board() {
         for seed in 0..=127u8 {
-            let board = generate_board(seed);
+            let board = board_for_seed(seed);
+            let interactive = (0..board.cells())
+                .filter(|&c| is_interactive(board, c))
+                .count();
             assert!(
-                n_interactive(board) <= MAX_INTERACTIVE,
-                "seed {seed}: interactive {} exceeds budget {MAX_INTERACTIVE}",
-                n_interactive(board)
+                interactive <= MAX_INTERACTIVE,
+                "seed {seed}: interactive {interactive} exceeds budget {MAX_INTERACTIVE}"
             );
             assert!(
                 !board.zero_regions.is_empty(),
