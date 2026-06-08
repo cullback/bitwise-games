@@ -1,0 +1,16 @@
+{
+  "name": "bitwise-palette",
+  "displayName": "Bitwise",
+  "description": "PICO-8 colors with a leading transparent slot. Used by the bitwise-games repo.",
+  "version": "1.0.0",
+  "author": { "name": "bitwise-games" },
+  "publisher": "bitwise-games",
+  "categories": [
+    "Palettes"
+  ],
+  "contributes": {
+    "palettes": [
+      { "id": "bitwise", "path": "./bitwise.gpl" }
+    ]
+  }
+}

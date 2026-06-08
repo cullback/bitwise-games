@@ -104,6 +104,183 @@ pub fn text_width(len: usize, scale: u32) -> u32 {
     }
 }
 
+/// Parse a bitmap row written as ASCII: `X` = on, anything else = off. MSB =
+/// leftmost. Designed for use in `const` initializers via `bitmap!`.
+pub const fn bitmap_row(s: &[u8]) -> u16 {
+    let mut bits: u16 = 0;
+    let mut i = 0;
+    while i < s.len() {
+        bits = (bits << 1) | ((s[i] == b'X') as u16);
+        i += 1;
+    }
+    bits
+}
+
+/// Declarative bitmap literal. Each row is a string of `X` and `.`.
+/// Expands to an array of `u16` (MSB = leftmost pixel).
+macro_rules! bitmap {
+    [$($row:literal),* $(,)?] => {
+        [$($crate::font::bitmap_row($row.as_bytes())),*]
+    };
+}
+
+pub const BIG_GLYPH_W: u32 = 9;
+pub const BIG_GLYPH_H: u32 = 11;
+
+const BIG_DIGITS: [[u16; BIG_GLYPH_H as usize]; 10] = [
+    bitmap![
+        "..XXXXX..",
+        ".XXXXXXX.",
+        "XXXXXXXXX",
+        "XXX...XXX",
+        "XXX...XXX",
+        "XXX...XXX",
+        "XXX...XXX",
+        "XXX...XXX",
+        "XXXXXXXXX",
+        ".XXXXXXX.",
+        "..XXXXX..",
+    ],
+    bitmap![
+        "...XXX...",
+        "..XXXX...",
+        ".XXXXX...",
+        "XXXXXX...",
+        "...XXX...",
+        "...XXX...",
+        "...XXX...",
+        "...XXX...",
+        "XXXXXXXXX",
+        "XXXXXXXXX",
+        "XXXXXXXXX",
+    ],
+    bitmap![
+        ".XXXXXXX.",
+        "XXXXXXXXX",
+        "XX....XXX",
+        "......XXX",
+        ".....XXXX",
+        "...XXX...",
+        ".XXXX....",
+        "XXXX.....",
+        "XXX......",
+        "XXXXXXXXX",
+        "XXXXXXXXX",
+    ],
+    bitmap![
+        ".XXXXXXX.",
+        "XX.....XX",
+        ".......XX",
+        ".......XX",
+        "....XXXXX",
+        "....XXXXX",
+        ".......XX",
+        ".......XX",
+        ".......XX",
+        "XX.....XX",
+        ".XXXXXXX.",
+    ],
+    bitmap![
+        "......XX.",
+        ".....XXX.",
+        "....X.XX.",
+        "...X..XX.",
+        "..X...XX.",
+        ".X....XX.",
+        "X.....XX.",
+        "XXXXXXXXX",
+        "XXXXXXXXX",
+        "......XX.",
+        "......XX.",
+    ],
+    bitmap![
+        "XXXXXXXXX",
+        "XXXXXXXXX",
+        "XX.......",
+        "XX.......",
+        "XXXXXXXXX",
+        "XXXXXXXXX",
+        "XX.....XX",
+        "XX.....XX",
+        "XX.....XX",
+        "XXXXXXXXX",
+        ".XXXXXXX.",
+    ],
+    bitmap![
+        "XX.......",
+        "XX.......",
+        "XX.......",
+        "XX.......",
+        "XXXXXXXXX",
+        "XXXXXXXXX",
+        "XX.....XX",
+        "XX.....XX",
+        "XX.....XX",
+        "XXXXXXXXX",
+        ".XXXXXXX.",
+    ],
+    bitmap![
+        "XXXXXXXXX",
+        "XXXXXXXXX",
+        ".......XX",
+        "......XX.",
+        ".....XX..",
+        "....XX...",
+        "....XX...",
+        "....XX...",
+        "....XX...",
+        "....XX...",
+        "....XX...",
+    ],
+    bitmap![
+        ".XXXXXXX.",
+        "XXXXXXXXX",
+        "XX.....XX",
+        "XX.....XX",
+        "XXXXXXXXX",
+        ".XXXXXXX.",
+        "XXXXXXXXX",
+        "XX.....XX",
+        "XX.....XX",
+        "XXXXXXXXX",
+        ".XXXXXXX.",
+    ],
+    bitmap![
+        ".XXXXXXX.",
+        "XXXXXXXXX",
+        "XX.....XX",
+        "XX.....XX",
+        "XX.....XX",
+        "XXXXXXXXX",
+        "XXXXXXXXX",
+        ".......XX",
+        ".......XX",
+        ".......XX",
+        ".......XX",
+    ],
+];
+
+pub fn draw_big_digit(commands: &mut Vec<DrawCommand>, ch: u8, x: u32, y: u32, color: Color) {
+    if !ch.is_ascii_digit() {
+        return;
+    }
+    let pattern = &BIG_DIGITS[(ch - b'0') as usize];
+    for (row, &bits) in pattern.iter().enumerate() {
+        for col in 0..BIG_GLYPH_W {
+            if (bits >> (BIG_GLYPH_W - 1 - col)) & 1 == 1 {
+                commands.push(DrawCommand::rect(x + col, y + row as u32, 1, 1, color));
+            }
+        }
+    }
+}
+
+pub fn draw_big_text(commands: &mut Vec<DrawCommand>, text: &[u8], x: u32, y: u32, color: Color) {
+    let gap = 1u32;
+    for (i, &ch) in text.iter().enumerate() {
+        draw_big_digit(commands, ch, x + i as u32 * (BIG_GLYPH_W + gap), y, color);
+    }
+}
+
 /// Decimal digits of `n` as ASCII bytes (b'0'..=b'9'), most-significant first.
 /// `n == 0` yields `[b'0']`.
 pub fn digits_of(n: u32) -> Vec<u8> {
@@ -118,4 +295,60 @@ pub fn digits_of(n: u32) -> Vec<u8> {
     }
     out.reverse();
     out
+}
+
+/// 5×3 character font loaded from `assets/5x3-chars.aseprite`. Each cell is
+/// 4×6 (3×5 ink + 1px gutter on the right and bottom), so chars blit
+/// side-by-side with automatic letter-spacing and line-spacing.
+pub mod tiny {
+    use crate::aseprite::load_glyph_grid;
+    use crate::draw_command::{Color, DrawCommand};
+    use std::sync::OnceLock;
+
+    pub const CHAR_W: u32 = 4;
+    pub const CHAR_H: u32 = 6;
+    const COLS: u32 = 16;
+    const COUNT: usize = 64;
+
+    static GLYPHS: OnceLock<[[u16; CHAR_H as usize]; COUNT]> = OnceLock::new();
+
+    fn glyphs() -> &'static [[u16; CHAR_H as usize]; COUNT] {
+        GLYPHS.get_or_init(|| {
+            load_glyph_grid::<{ CHAR_W }, { CHAR_H as usize }, COLS, COUNT>(include_bytes!(
+                "../assets/5x3-chars.aseprite"
+            ))
+        })
+    }
+
+    /// Map ASCII byte to glyph index. Only space, digits, and uppercase A–Z
+    /// are supported right now. Unsupported chars draw nothing.
+    pub fn char_index(c: u8) -> Option<u8> {
+        match c {
+            b' ' => Some(0),
+            b'0'..=b'9' => Some(16 + (c - b'0')),
+            b'A'..=b'Z' => Some(26 + (c - b'A')),
+            _ => None,
+        }
+    }
+
+    pub fn draw_char(commands: &mut Vec<DrawCommand>, idx: u8, x: u32, y: u32, color: Color) {
+        let pattern = &glyphs()[idx as usize];
+        for (row, &bits) in pattern.iter().enumerate() {
+            for col in 0..CHAR_W {
+                if (bits >> (CHAR_W - 1 - col)) & 1 == 1 {
+                    commands.push(DrawCommand::rect(x + col, y + row as u32, 1, 1, color));
+                }
+            }
+        }
+    }
+
+    /// Draw `text` at `(x, y)`. Unsupported chars are silent gaps so layout
+    /// stays predictable.
+    pub fn draw_text(commands: &mut Vec<DrawCommand>, text: &[u8], x: u32, y: u32, color: Color) {
+        for (i, &c) in text.iter().enumerate() {
+            if let Some(idx) = char_index(c) {
+                draw_char(commands, idx, x + i as u32 * CHAR_W, y, color);
+            }
+        }
+    }
 }

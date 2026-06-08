@@ -19,25 +19,28 @@ every rank/unrank after that is microseconds, far inside the 5 FPS budget.
 Direction is implicit — head facing = direction(body[0] → head), no bits spent.
 
 */
-use bitwise_games::draw_command::{BLACK, Color, DARK_BLUE, DrawCommand, GREEN, RED, WHITE};
-use bitwise_games::font::{digits_of, draw_text, text_width};
+use bitwise_games::aseprite::load_color_grid;
+use bitwise_games::draw_command::{BLACK, DARK_BLUE, DrawCommand, GREEN, RED, WHITE};
+use bitwise_games::font::{digits_of, draw_big_text, tiny};
 use bitwise_games::frame_buffer::FrameBuffer;
 use bitwise_games::rng;
+use bitwise_games::sprite::{Rot, blit_square};
 use bitwise_games::{Game, Key};
 use rancor::saw::Saw;
 use std::sync::OnceLock;
 
 // --- Board / display ---
 //
-// 9 wide × 8 tall board, 14 px cells, 1 px border all around. The "missing
-// 9th row" at the top (14 px) is the score zone. Math:
-//   - Score:        y =   0..13  (14 px tall, FONT_SCALE=2 fits a 10×14 digit)
-//   - Top border:   y =  14      (1 px)
+// 9 wide × 8 tall board, 14 px cells, 1 px border all around (score zone
+// included). The "missing 9th row" at the top is the score zone. Math:
+//   - Outer top:    y =   0      (1 px)
+//   - Score:        y =   1..13  (13 px tall, fits a 9×11 digit at y=2..12)
+//   - Separator:    y =  14      (1 px, divides score from board)
 //   - Board:        y =  15..126 (8 rows × 14 = 112 px)
-//   - Bottom border:y = 127      (1 px)
-//   - Left border:  x =   0      (1 px)
+//   - Bottom:       y = 127      (1 px)
+//   - Left border:  x =   0      (1 px, full height)
 //   - Board:        x =   1..126 (9 cols × 14 = 126 px)
-//   - Right border: x = 127      (1 px)
+//   - Right border: x = 127      (1 px, full height)
 // → 128 × 128 exactly, no slack.
 
 const BOARD_W: u32 = 9;
@@ -51,8 +54,6 @@ const GAME_W_PX: u32 = BOARD_W * CELL_PX;
 const GAME_H_PX: u32 = BOARD_H * CELL_PX;
 const GAME_X: u32 = 1;
 const GAME_Y: u32 = SCORE_H + 1;
-const FONT_SCALE: u32 = 2;
-const BANNER_SCALE: u32 = 2;
 
 // Maximum body length (cells beyond head). Snake total = MAX_LEN + 1 = full
 // board, since the whole SAW-rank space fits a u64 — no count-driven cap.
@@ -223,175 +224,108 @@ fn cell_xy(cell: u8) -> (u32, u32) {
     (GAME_X + col * CELL_PX, GAME_Y + row * CELL_PX)
 }
 
-fn draw_number(commands: &mut Vec<DrawCommand>, n: u32, x: u32, y: u32) {
-    draw_text(commands, &digits_of(n), x, y, FONT_SCALE, WHITE);
+// --- Snake sprites (loaded from assets/snake.aseprite) ---
+//
+// Strip of 6 cells, 14×14 each, in order: tail, body, body turn (curving
+// from left to down), dead head, alive head, apple. All "directional"
+// sprites are drawn at their base orientation and rotated at draw time.
+
+const SPR_TAIL: usize = 0;
+const SPR_BODY: usize = 1;
+const SPR_TURN: usize = 2;
+const SPR_HEAD_DEAD: usize = 3;
+const SPR_HEAD_ALIVE: usize = 4;
+const SPR_APPLE: usize = 5;
+
+static SNAKE_SPRITES: OnceLock<[[[u8; 14]; 14]; 6]> = OnceLock::new();
+
+fn snake_sprites() -> &'static [[[u8; 14]; 14]; 6] {
+    SNAKE_SPRITES
+        .get_or_init(|| load_color_grid::<14, 14, 6, 6>(include_bytes!("../assets/snake.aseprite")))
 }
 
-#[derive(Copy, Clone)]
-enum Corner {
-    TL,
-    TR,
-    BR,
-    BL,
+/// Rotation for sprites whose base orientation points RIGHT (head + tail).
+/// DIR_LEFT uses a horizontal mirror instead of R180 — for a head whose eyes
+/// sit near the top, R180 puts the eyes at the bottom (upside-down face).
+fn rot_for_right_facing(dir: u8) -> Rot {
+    match dir {
+        DIR_RIGHT => Rot::R0,
+        DIR_DOWN => Rot::R90,
+        DIR_LEFT => Rot::FlipH,
+        DIR_UP => Rot::R270,
+        _ => Rot::R0,
+    }
 }
 
-fn outer_corner(arrival: u8, departure: u8) -> Corner {
+/// Rotation for the straight body. Base is horizontal; vertical needs R90.
+fn rot_for_body(dir: u8) -> Rot {
+    match dir {
+        DIR_LEFT | DIR_RIGHT => Rot::R0,
+        DIR_UP | DIR_DOWN => Rot::R90,
+        _ => Rot::R0,
+    }
+}
+
+/// Rotation for the corner sprite. Base = body fills LEFT+BOTTOM of the cell
+/// (entered from the LEFT side, exits at the BOTTOM). The walking convention:
+/// `arrival` is the direction the head→tail walk took *into* this cell, so
+/// entering from the LEFT side means `arrival = DIR_RIGHT`.
+fn rot_for_turn(arrival: u8, departure: u8) -> Rot {
     match (arrival, departure) {
-        (DIR_DOWN, DIR_RIGHT) | (DIR_LEFT, DIR_UP) => Corner::BL,
-        (DIR_DOWN, DIR_LEFT) | (DIR_RIGHT, DIR_UP) => Corner::BR,
-        (DIR_UP, DIR_RIGHT) | (DIR_LEFT, DIR_DOWN) => Corner::TL,
-        (DIR_UP, DIR_LEFT) | (DIR_RIGHT, DIR_DOWN) => Corner::TR,
-        _ => Corner::TL,
+        // body in LEFT+BOTTOM — base
+        (DIR_RIGHT, DIR_DOWN) | (DIR_UP, DIR_LEFT) => Rot::R0,
+        // body in TOP+LEFT
+        (DIR_DOWN, DIR_LEFT) | (DIR_RIGHT, DIR_UP) => Rot::R90,
+        // body in RIGHT+TOP
+        (DIR_LEFT, DIR_UP) | (DIR_DOWN, DIR_RIGHT) => Rot::R180,
+        // body in BOTTOM+RIGHT
+        (DIR_UP, DIR_RIGHT) | (DIR_LEFT, DIR_DOWN) => Rot::R270,
+        _ => Rot::R0,
     }
 }
 
-fn draw_body_cell(commands: &mut Vec<DrawCommand>, cell: u8, rounded: Option<Corner>) {
+fn draw_body_cell(fb: &mut FrameBuffer, cell: u8, arr: u8, dep: u8) {
     let (x, y) = cell_xy(cell);
-    commands.push(DrawCommand::rect(x, y, CELL_PX, CELL_PX, GREEN));
-    if let Some(corner) = rounded {
-        let (cx, cy, dx, dy) = match corner {
-            Corner::TL => (x, y, 1i32, 1i32),
-            Corner::TR => (x + CELL_PX - 1, y, -1, 1),
-            Corner::BR => (x + CELL_PX - 1, y + CELL_PX - 1, -1, -1),
-            Corner::BL => (x, y + CELL_PX - 1, 1, -1),
-        };
-        commands.push(DrawCommand::rect(cx, cy, 1, 1, DARK_BLUE));
-        commands.push(DrawCommand::rect(
-            (cx as i32 + dx) as u32,
-            cy,
-            1,
-            1,
-            DARK_BLUE,
-        ));
-        commands.push(DrawCommand::rect(
-            cx,
-            (cy as i32 + dy) as u32,
-            1,
-            1,
-            DARK_BLUE,
-        ));
-    }
-}
-
-/// Triangular notch depth at row/column `i` of a tail cell. The notch is
-/// `i` deep at the edges and `CELL_PX/2 - 1` at the middle.
-fn tail_notch_depth(i: u32) -> u32 {
-    i.min(CELL_PX - 1 - i)
-}
-
-fn draw_tail_cell(commands: &mut Vec<DrawCommand>, cell: u8, body_dir: u8) {
-    let (x, y) = cell_xy(cell);
-    for i in 0..CELL_PX {
-        let depth = tail_notch_depth(i);
-        let span = CELL_PX - depth;
-        match body_dir {
-            DIR_RIGHT => commands.push(DrawCommand::rect(x + depth, y + i, span, 1, GREEN)),
-            DIR_LEFT => commands.push(DrawCommand::rect(x, y + i, span, 1, GREEN)),
-            DIR_DOWN => commands.push(DrawCommand::rect(x + i, y + depth, 1, span, GREEN)),
-            DIR_UP => commands.push(DrawCommand::rect(x + i, y, 1, span, GREEN)),
-            _ => {}
-        }
-    }
-}
-
-fn draw_head_cell(commands: &mut Vec<DrawCommand>, cell: u8, dir: u8, dead: bool) {
-    let (x, y) = cell_xy(cell);
-    // Body strip + rounded corners. All offsets are CELL_PX-relative so the
-    // shape scales cleanly with cell size.
-    commands.push(DrawCommand::rect(x, y + 2, CELL_PX, CELL_PX - 4, GREEN));
-    commands.push(DrawCommand::rect(x + 1, y + 1, CELL_PX - 2, 1, GREEN));
-    commands.push(DrawCommand::rect(
-        x + 1,
-        y + CELL_PX - 2,
-        CELL_PX - 2,
-        1,
-        GREEN,
-    ));
-    commands.push(DrawCommand::rect(x + 2, y, CELL_PX - 4, 1, GREEN));
-    commands.push(DrawCommand::rect(
-        x + 2,
-        y + CELL_PX - 1,
-        CELL_PX - 4,
-        1,
-        GREEN,
-    ));
-
-    // Eyes: 2×2 black squares. "Near" coordinate = 3 from edge, "far" = CELL_PX - 5.
-    let near = 3u32;
-    let far = CELL_PX - 5;
-    let (e1, e2) = match dir {
-        DIR_UP => ((x + near, y + near), (x + far, y + near)),
-        DIR_RIGHT => ((x + far, y + near), (x + far, y + far)),
-        DIR_DOWN => ((x + near, y + far), (x + far, y + far)),
-        DIR_LEFT => ((x + near, y + near), (x + near, y + far)),
-        _ => return,
-    };
-    if dead {
-        draw_x_eye(commands, e1.0, e1.1);
-        draw_x_eye(commands, e2.0, e2.1);
+    let sprites = snake_sprites();
+    if arr == dep {
+        blit_square(fb, &sprites[SPR_BODY], x, y, rot_for_body(dep));
     } else {
-        commands.push(DrawCommand::rect(e1.0, e1.1, 2, 2, BLACK));
-        commands.push(DrawCommand::rect(e2.0, e2.1, 2, 2, BLACK));
+        blit_square(fb, &sprites[SPR_TURN], x, y, rot_for_turn(arr, dep));
     }
 }
 
-fn draw_x_eye(commands: &mut Vec<DrawCommand>, x: u32, y: u32) {
-    commands.push(DrawCommand::rect(x, y, 1, 1, BLACK));
-    commands.push(DrawCommand::rect(x + 2, y, 1, 1, BLACK));
-    commands.push(DrawCommand::rect(x + 1, y + 1, 1, 1, BLACK));
-    commands.push(DrawCommand::rect(x, y + 2, 1, 1, BLACK));
-    commands.push(DrawCommand::rect(x + 2, y + 2, 1, 1, BLACK));
-}
-
-fn draw_apple(commands: &mut Vec<DrawCommand>, cell: u8) {
+fn draw_tail_cell(fb: &mut FrameBuffer, cell: u8, body_dir: u8) {
     let (x, y) = cell_xy(cell);
-    commands.push(DrawCommand::rect(
-        x + 3,
-        y + 3,
-        CELL_PX - 6,
-        CELL_PX - 6,
-        RED,
-    ));
+    blit_square(
+        fb,
+        &snake_sprites()[SPR_TAIL],
+        x,
+        y,
+        rot_for_right_facing(body_dir),
+    );
 }
 
-fn draw_banner(commands: &mut Vec<DrawCommand>, line1: &[u8], line2: &[u8], color: Color) {
-    let line1_w = text_width(line1.len(), BANNER_SCALE);
-    let line2_w = text_width(line2.len(), BANNER_SCALE);
-    let banner_w = line1_w.max(line2_w) + 8;
-    let banner_h = 36;
-    let banner_x = GAME_X + (GAME_W_PX - banner_w) / 2;
-    let banner_y = GAME_Y + (GAME_H_PX - banner_h) / 2;
+fn draw_head_cell(fb: &mut FrameBuffer, cell: u8, dir: u8, dead: bool) {
+    let (x, y) = cell_xy(cell);
+    let sprite_idx = if dead { SPR_HEAD_DEAD } else { SPR_HEAD_ALIVE };
+    blit_square(
+        fb,
+        &snake_sprites()[sprite_idx],
+        x,
+        y,
+        rot_for_right_facing(dir),
+    );
+}
 
-    commands.push(DrawCommand::rect(
-        banner_x, banner_y, banner_w, banner_h, BLACK,
-    ));
-    commands.push(DrawCommand::rect(banner_x, banner_y, banner_w, 1, color));
-    commands.push(DrawCommand::rect(
-        banner_x,
-        banner_y + banner_h - 1,
-        banner_w,
-        1,
-        color,
-    ));
-    commands.push(DrawCommand::rect(banner_x, banner_y, 1, banner_h, color));
-    commands.push(DrawCommand::rect(
-        banner_x + banner_w - 1,
-        banner_y,
-        1,
-        banner_h,
-        color,
-    ));
-
-    let line1_x = banner_x + (banner_w - line1_w) / 2;
-    let line2_x = banner_x + (banner_w - line2_w) / 2;
-    draw_text(commands, line1, line1_x, banner_y + 6, BANNER_SCALE, color);
-    draw_text(commands, line2, line2_x, banner_y + 22, BANNER_SCALE, WHITE);
+fn draw_apple(fb: &mut FrameBuffer, cell: u8) {
+    let (x, y) = cell_xy(cell);
+    blit_square(fb, &snake_sprites()[SPR_APPLE], x, y, Rot::R0);
 }
 
 fn render(state: &State) -> FrameBuffer {
     let mut fb = FrameBuffer::new();
-    let mut commands = Vec::new();
-    commands.push(DrawCommand::rect(0, 0, DISPLAY_PX, DISPLAY_PX, BLACK));
+    let mut bg = Vec::new();
+    bg.push(DrawCommand::rect(0, 0, DISPLAY_PX, DISPLAY_PX, BLACK));
 
     let dead = state.dead;
     let cells = &state.cells;
@@ -399,14 +333,30 @@ fn render(state: &State) -> FrameBuffer {
 
     // Score = apples eaten = body_len − 1 (the starting body length is 1).
     // Always drawn so the final score stays visible on the death screen.
+    // Right-aligned: rightmost on-pixel sits at x=123 (3 px from inner edge).
     let score = (state.body_len() as u32).saturating_sub(1);
-    draw_number(&mut commands, score, 4, 2);
+    let score_digits = digits_of(score);
+    let score_w = score_digits.len() as u32 * 10 - 1; // 9 px glyph + 1 px gap, minus trailing gap
+    let score_x = 124 - score_w;
+    draw_big_text(&mut bg, &score_digits, score_x, 2, WHITE);
 
-    commands.push(DrawCommand::rect(
+    // Status text: left-aligned in the score zone, shares row with the score.
+    // Tiny font is 6 px tall; vertical-center in the 11-px-tall score line by
+    // dropping it 4 px from the score's top.
+    let won = !state.dead && state.body_len() >= MAX_LEN;
+    if state.dead {
+        tiny::draw_text(&mut bg, b"GAME OVER", 4, 4, RED);
+    } else if won {
+        tiny::draw_text(&mut bg, b"YOU WIN", 4, 4, GREEN);
+    }
+
+    bg.push(DrawCommand::rect(
         GAME_X, GAME_Y, GAME_W_PX, GAME_H_PX, DARK_BLUE,
     ));
-    // Top border.
-    commands.push(DrawCommand::rect(
+    // Outer top border (wraps the score zone too).
+    bg.push(DrawCommand::rect(0, 0, DISPLAY_PX, 1, WHITE));
+    // Score/board separator.
+    bg.push(DrawCommand::rect(
         GAME_X - 1,
         GAME_Y - 1,
         GAME_W_PX + 2,
@@ -414,29 +364,19 @@ fn render(state: &State) -> FrameBuffer {
         WHITE,
     ));
     // Bottom border.
-    commands.push(DrawCommand::rect(
+    bg.push(DrawCommand::rect(
         GAME_X - 1,
         GAME_Y + GAME_H_PX,
         GAME_W_PX + 2,
         1,
         WHITE,
     ));
-    // Left border.
-    commands.push(DrawCommand::rect(
-        GAME_X - 1,
-        GAME_Y - 1,
-        1,
-        GAME_H_PX + 2,
-        WHITE,
-    ));
-    // Right border.
-    commands.push(DrawCommand::rect(
-        GAME_X + GAME_W_PX,
-        GAME_Y - 1,
-        1,
-        GAME_H_PX + 2,
-        WHITE,
-    ));
+    // Left border (full height).
+    bg.push(DrawCommand::rect(0, 0, 1, DISPLAY_PX, WHITE));
+    // Right border (full height).
+    bg.push(DrawCommand::rect(DISPLAY_PX - 1, 0, 1, DISPLAY_PX, WHITE));
+
+    fb.draw_list(&bg);
 
     // Walking direction at cells[i]: direction from cells[i] → cells[i+1]
     // (or, equivalently, the "walking-toward-tail" direction at cell i).
@@ -452,12 +392,7 @@ fn render(state: &State) -> FrameBuffer {
     for i in 1..cells.len().saturating_sub(1) {
         let arr = walking_dirs[i - 1];
         let dep = walking_dirs[i];
-        let rounded = if arr != dep {
-            Some(outer_corner(arr, dep))
-        } else {
-            None
-        };
-        draw_body_cell(&mut commands, cells[i], rounded);
+        draw_body_cell(&mut fb, cells[i], arr, dep);
     }
 
     // Tail (only if there is a body[0..] beyond the head).
@@ -466,24 +401,16 @@ fn render(state: &State) -> FrameBuffer {
         // body cell (i.e., opposite the walking direction).
         let last = cells.len() - 1;
         let body_dir = opposite(walking_dirs[last - 1]);
-        draw_tail_cell(&mut commands, cells[last], body_dir);
+        draw_tail_cell(&mut fb, cells[last], body_dir);
     }
 
-    draw_head_cell(&mut commands, cells[0], facing, dead);
+    draw_head_cell(&mut fb, cells[0], facing, dead);
 
     if !dead {
         let apple = apple_cell(cells.len(), state.apple_bits);
-        draw_apple(&mut commands, apple);
+        draw_apple(&mut fb, apple);
     }
 
-    let won = !dead && state.body_len() >= MAX_LEN;
-    if dead {
-        draw_banner(&mut commands, b"GAME OVER", b"PRESS Z", RED);
-    } else if won {
-        draw_banner(&mut commands, b"YOU WIN", b"PRESS Z", GREEN);
-    }
-
-    fb.draw_list(&commands);
     fb
 }
 

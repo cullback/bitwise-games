@@ -1,3 +1,4 @@
+pub mod aseprite;
 pub mod bits;
 pub mod draw_command;
 pub mod font;

@@ -52,6 +52,11 @@
 - 25 bits of state
 - use remaining for move counter
 
+## Crossy road
+
+- fixed width
+- how to do logs? i think its just a rendering issue?
+
 ## connect four
 
 - 6x7 board = 42 cells
