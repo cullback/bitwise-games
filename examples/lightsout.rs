@@ -335,13 +335,13 @@ impl Game for LightsOut {
         }
 
         // Z toggles the hovered cell + its 4 neighbours.
-        if buffered == Some(Key::Z)
-            && let Some((r, c)) = hover
-        {
-            let new_grid = apply_click(grid, r as i32, c as i32);
-            let new_count = (count + 1).min(COUNTER_MAX);
-            let new_state = pack(new_grid, new_count);
-            return (new_state, render(new_state, hover));
+        if buffered == Some(Key::Z) {
+            if let Some((r, c)) = hover {
+                let new_grid = apply_click(grid, r as i32, c as i32);
+                let new_count = (count + 1).min(COUNTER_MAX);
+                let new_state = pack(new_grid, new_count);
+                return (new_state, render(new_state, hover));
+            }
         }
 
         (state, render(state, hover))

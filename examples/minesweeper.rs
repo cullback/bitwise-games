@@ -831,11 +831,10 @@ fn render(state: &State, board: &Board, hover: Option<u8>) -> FrameBuffer {
     // Hover ring is drawn *before* glyphs so the flag pole, digit, or mine
     // body lands on top of it — the yellow shows in the gaps the glyph
     // leaves rather than overpainting the glyph.
-    if !dead
-        && !won
-        && let Some(cell) = hover
-    {
-        draw_hover(&mut commands, cell);
+    if !dead && !won {
+        if let Some(cell) = hover {
+            draw_hover(&mut commands, cell);
+        }
     }
 
     // Second pass: glyphs (numbers, mines, flags). Drawn after all backgrounds
