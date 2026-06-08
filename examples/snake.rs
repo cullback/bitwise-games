@@ -5,14 +5,14 @@ Snake on a 9×8 grid, with the whole game state packed into one u64.
 The snake's body is a directed self-avoiding walk (head → tail). We rank that
 walk with `rancor::saw` and store the integer; the apple rides in the low bits.
 
-| Field      | Bits | Description                                              |
-|------------|------|----------------------------------------------------------|
-| apple_bits | 3    | apple entropy; the value 7 doubles as the "dead" marker  |
-| body rank  | ~57  | rancor::saw rank of the head→tail walk (any length ≥ 1)  |
+| Field     | Bits | Description                                              |
+|-----------|------|----------------------------------------------------------|
+| apple     | 7    | apple cell 0..=71; 127 is the "dead" sentinel            |
+| body rank | ~57  | rancor::saw rank of the head→tail walk (any length ≥ 1)  |
 
-Layout (low → high): apple_bits | body rank. The board has 72 cells, so the
-full SAW count (~9.3×10¹⁶ ≈ 2^56.4) plus 3 apple bits fits a u64 with room to
-spare — the snake can grow to fill the entire board, no length cap.
+Layout (low → high): apple | body rank. The board has 72 cells, so the full
+SAW count (~9.3×10¹⁶ ≈ 2^56.4) plus 7 apple bits fits a u64 exactly — the
+snake can grow to fill the entire board, no length cap.
 
 `rancor::saw::Saw<9, 8>` builds its ranking table once (~70 ms) on first use;
 every rank/unrank after that is microseconds, far inside the 5 FPS budget.
@@ -131,19 +131,21 @@ fn from_coords(coords: &[(usize, usize)]) -> Vec<u8> {
 // --- State ---
 //
 // Packed `u64`:
-//   bits 0..APPLE_BITS — apple_bits (7 == dead sentinel)
+//   bits 0..APPLE_BITS — apple cell (0..=71 alive, 127 == dead sentinel)
 //   bits APPLE_BITS..  — body rank
 //
 // A dead snake keeps its full body (so the corpse stays on screen); only the
-// apple-bits slot changes, to the DEAD sentinel.
+// apple slot changes, to the DEAD_APPLE sentinel.
 
-const APPLE_BITS: u32 = 3;
+const APPLE_BITS: u32 = 7;
 const APPLE_MASK: u64 = (1u64 << APPLE_BITS) - 1;
-const DEAD_APPLE_BITS: u8 = 7;
-const APPLE_CANDIDATES: u8 = 7;
+const DEAD_APPLE: u8 = 127;
 
 struct State {
-    apple_bits: u8,
+    /// Cell where the apple sits (0..=71), or `DEAD_APPLE` (127) if the snake
+    /// is dead. When the board is full there's no free cell, but the renderer
+    /// detects "won" from the snake length so the apple value is ignored.
+    apple: u8,
     /// Snake cells in head→tail order; `cells[0]` is the head. Always ≥ 2 cells
     /// (the spawn length); a dead snake keeps its full body for the corpse.
     cells: Vec<u8>,
@@ -151,22 +153,14 @@ struct State {
 }
 
 impl State {
-    fn head(&self) -> u8 {
-        self.cells[0]
-    }
-
     fn body_len(&self) -> usize {
-        self.cells.len().saturating_sub(1)
+        self.cells.len() - 1
     }
 
     /// Direction the head is currently facing (the direction it will move next
     /// tick if no input). Derived from body[0]'s position relative to head.
     fn facing(&self) -> u8 {
-        if self.cells.len() < 2 {
-            return DIR_RIGHT; // arbitrary fallback for dead state
-        }
-        // facing = direction from body[0] → head
-        direction_between(self.cells[1], self.cells[0]).unwrap_or(DIR_RIGHT)
+        direction_between(self.cells[1], self.cells[0]).unwrap()
     }
 }
 
@@ -174,23 +168,19 @@ impl State {
 
 fn encode(state: &State) -> u64 {
     // Alive and dead use the same walk encoding; a dead snake just stores the
-    // DEAD sentinel in the apple slot so the corpse body survives the round-trip.
+    // DEAD_APPLE sentinel so the corpse body survives the round-trip.
     let rank = saw().rank(&to_coords(&state.cells));
-    let apple = if state.dead {
-        DEAD_APPLE_BITS
-    } else {
-        state.apple_bits
-    };
+    let apple = if state.dead { DEAD_APPLE } else { state.apple };
     (rank << APPLE_BITS) | (apple as u64 & APPLE_MASK)
 }
 
 fn decode(packed: u64) -> State {
-    let apple_bits = (packed & APPLE_MASK) as u8;
+    let apple = (packed & APPLE_MASK) as u8;
     let cells = from_coords(&saw().unrank(packed >> APPLE_BITS));
     State {
-        apple_bits,
+        apple,
         cells,
-        dead: apple_bits == DEAD_APPLE_BITS,
+        dead: apple == DEAD_APPLE,
     }
 }
 
@@ -198,22 +188,27 @@ fn decode(packed: u64) -> State {
 
 const N_CELLS: u32 = BOARD_W * BOARD_H;
 
-fn apple_cell(snake_length: usize, apple_bits: u8) -> u8 {
-    let seed = ((snake_length as u64) << 3) | (apple_bits as u64);
-    (rng::next(seed) % N_CELLS as u64) as u8
-}
-
-fn pick_apple_bits(seed: u64, snake_cells: &[u8]) -> u8 {
+/// Pick a uniformly-random cell that's not on the snake. Rejection-free: maps
+/// `seed` into `[0, n_free)` and walks the cell space, returning the K-th free
+/// cell. Returns `0` when the board is full (won state); the renderer detects
+/// won from the snake length and skips drawing the apple.
+fn pick_apple(snake_cells: &[u8], seed: u64) -> u8 {
+    let n_free = N_CELLS as usize - snake_cells.len();
+    if n_free == 0 {
+        return 0;
+    }
     let mask = snake_cells.iter().fold(0u128, |acc, &c| acc | (1u128 << c));
-    let start = (rng::next(seed) % APPLE_CANDIDATES as u64) as u8;
-    for offset in 0..APPLE_CANDIDATES {
-        let bits = (start + offset) % APPLE_CANDIDATES;
-        let cell = apple_cell(snake_cells.len(), bits);
+    let free_idx = (rng::next(seed) % n_free as u64) as usize;
+    let mut count = 0;
+    for cell in 0..N_CELLS as u8 {
         if (mask >> cell) & 1 == 0 {
-            return bits;
+            if count == free_idx {
+                return cell;
+            }
+            count += 1;
         }
     }
-    start
+    unreachable!("free_idx < n_free, so the loop must hit it")
 }
 
 // --- Rendering ---
@@ -406,9 +401,9 @@ fn render(state: &State) -> FrameBuffer {
 
     draw_head_cell(&mut fb, cells[0], facing, dead);
 
-    if !dead {
-        let apple = apple_cell(cells.len(), state.apple_bits);
-        draw_apple(&mut fb, apple);
+    // Skip drawing when dead or when the board is full (won — no apple).
+    if !dead && state.body_len() < MAX_LEN {
+        draw_apple(&mut fb, state.apple);
     }
 
     fb
@@ -423,9 +418,9 @@ fn fresh_board(seed: u64) -> State {
     let head: u8 = row * BOARD_W as u8 + col;
     let body0: u8 = head - 1;
     let cells = vec![head, body0];
-    let apple_bits = pick_apple_bits(seed, &cells);
+    let apple = pick_apple(&cells, seed);
     State {
-        apple_bits,
+        apple,
         cells,
         dead: false,
     }
@@ -451,16 +446,8 @@ impl Game for Snake {
     ) -> (u64, FrameBuffer) {
         let mut state = decode(state);
 
-        if state.dead {
-            if matches!(buffered, Some(Key::Z) | Some(Key::X)) {
-                let next = fresh_board(rng::next(encode(&state)));
-                return (encode(&next), render(&next));
-            }
-            return (encode(&state), render(&state));
-        }
-
-        // Won state (max length): freeze, restart on Z/X.
-        if state.body_len() >= MAX_LEN {
+        // Dead or won: freeze, restart on Z/X.
+        if state.dead || state.body_len() >= MAX_LEN {
             if matches!(buffered, Some(Key::Z) | Some(Key::X)) {
                 let next = fresh_board(rng::next(encode(&state)));
                 return (encode(&next), render(&next));
@@ -481,7 +468,7 @@ impl Game for Snake {
             _ => facing,
         };
 
-        let new_head = match step(state.head(), new_dir) {
+        let new_head = match step(state.cells[0], new_dir) {
             Some(p) => p,
             None => {
                 // Tried to walk off the edge — die in place, body stays.
@@ -490,8 +477,7 @@ impl Game for Snake {
             }
         };
 
-        let current_apple = apple_cell(state.cells.len(), state.apple_bits);
-        let ate = new_head == current_apple;
+        let ate = new_head == state.apple;
 
         // Self-collision: check against body. The tail will vacate this tick
         // unless we grew, so exclude the tail cell from the check in that case.
@@ -516,19 +502,14 @@ impl Game for Snake {
         };
         new_cells.extend_from_slice(&state.cells[..keep]);
 
-        // Don't exceed MAX_LEN cells of body (head + MAX_LEN total = MAX_LEN+1 cells).
-        if new_cells.len() > MAX_LEN + 1 {
-            new_cells.truncate(MAX_LEN + 1);
-        }
-
-        let new_apple_bits = if ate {
+        let new_apple = if ate {
             let seed = (new_head as u64) ^ ((new_cells.len() as u64) << 8);
-            pick_apple_bits(seed, &new_cells)
+            pick_apple(&new_cells, seed)
         } else {
-            state.apple_bits
+            state.apple
         };
 
-        state.apple_bits = new_apple_bits;
+        state.apple = new_apple;
         state.cells = new_cells;
         (encode(&state), render(&state))
     }
@@ -544,7 +525,7 @@ mod tests {
 
     fn snake(cells: Vec<u8>) -> State {
         State {
-            apple_bits: 5,
+            apple: 5,
             cells,
             dead: false,
         }
@@ -572,7 +553,7 @@ mod tests {
             let d = decode(encode(&s));
             assert!(!d.dead);
             assert_eq!(d.cells, s.cells, "round-trip failed for {:?}", s.cells);
-            assert_eq!(d.apple_bits, s.apple_bits);
+            assert_eq!(d.apple, s.apple);
         }
     }
 
@@ -604,17 +585,17 @@ mod tests {
 
     #[test]
     fn dead_round_trip() {
-        // A dead snake keeps its full body; `dead` rides on the apple-bits
-        // sentinel, which decode reports as DEAD_APPLE_BITS.
+        // A dead snake keeps its full body; `dead` rides on the apple
+        // sentinel, which decode reports as DEAD_APPLE.
         let s = State {
-            apple_bits: 3,
+            apple: 3,
             cells: vec![cell(3, 3), cell(3, 2), cell(3, 1)],
             dead: true,
         };
         let d = decode(encode(&s));
         assert!(d.dead);
         assert_eq!(d.cells, s.cells);
-        assert_eq!(d.apple_bits, DEAD_APPLE_BITS);
+        assert_eq!(d.apple, DEAD_APPLE);
     }
 
     #[test]
