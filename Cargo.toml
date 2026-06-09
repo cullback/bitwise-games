@@ -12,3 +12,7 @@ tungstenite = "0.24"
 [[example]]
 name = "minesweeper"
 path = "examples/minesweeper/main.rs"
+
+[[example]]
+name = "connect4"
+path = "examples/connect4.rs"

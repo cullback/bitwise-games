@@ -62,12 +62,15 @@
 
 - https://www.lexaloffle.com/bbs/?tid=41332
 
-## connect four
+## [x] Connect Four
 
-- 6x7 board = 42 cells
-- 7*3=21 bit heightmap
-- 42 x/o bitboard
-- 63 bits total
+- 6×7 board = 42 cells
+- 21 bits: 7 column heights × 3 bits (height 0..6)
+- 42 bits: per-cell color (1 = red / P1, 0 = yellow / P2),
+  meaningful only under the heightmap
+- 1 bit free
+- Whose turn = parity of total piece count (no bit spent)
+- Game over / draw / winner = derivable from board (no bits spent)
 
 ## Hangman
 
@@ -146,6 +149,8 @@
 - paddle animation x2
 
 ## Don't see a way
+
+### Sudoku
 
 ### Tetris
 
